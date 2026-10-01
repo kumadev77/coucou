@@ -85,6 +85,22 @@ export const Bridge = {
   chatReset: () => call<void>("chat_reset"),
   /** Copies a dropped file into the inbox. */
   ingestFile: (path: string) => callOrThrow<DroppedFile>("ingest_file", { path }),
+  /** A file dropped on the webview: WebView2 gives the page bytes, not a path. */
+  ingestBytes: async (file: File): Promise<DroppedFile> => {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    return invoke<DroppedFile>("ingest_bytes", bytes, {
+      headers: { "x-file-name": encodeURIComponent(file.name) },
+    });
+  },
+  mediaSearch: (kind: "music" | "video", query: string) =>
+    call<MediaItem[]>("media_search", { kind, query }),
+  mediaOpen: (path: string, kind: "music" | "video") => callOrThrow<void>("media_open", { path, kind }),
+  webSearch: (query: string) => callOrThrow<void>("web_search", { query }),
+  youtubeSearch: (query: string) => callOrThrow<void>("youtube_search", { query }),
+  gameLaunch: (name: string) => callOrThrow<void>("game_launch", { name }),
+  potplayerDetect: () => call<string | null>("potplayer_detect"),
+  /** The Windows "Open" dialog. Null when cancelled. */
+  pickFile: () => call<string | null>("pick_file"),
   /** Only ever tells you whether a key exists — never its value. */
   secretPresent: (key: string) => call<boolean>("secret_present", { key }),
   secretSet: (key: string, value: string) => callOrThrow<void>("secret_set", { key, value }),
@@ -109,6 +125,16 @@ export interface IntegrationUpdate {
 export type ChatContext =
   | { kind: "file"; name: string; path: string }
   | { kind: "window"; appName: string; title: string; url?: string };
+
+export interface MediaItem {
+  name: string;
+  path: string;
+  category: string;
+  score: number;
+}
+
+/** What Mochi just did, for its reactions: music dance, search glasses, game controller. */
+export type MochiAction = "game" | "music" | "video" | "search" | "youtube";
 
 export interface DroppedFile {
   name: string;

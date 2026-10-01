@@ -265,3 +265,35 @@ select option {
   background: rgba(245, 165, 36, 0.13);
   color: #fbc06a;
 }
+
+/* Repeating cards inside a section: media categories, games (settings/assistant.ts). */
+.stack-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.sub-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+}
+
+.chips { gap: 6px 10px; flex: 1 1 auto; }
+.chip-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--dim);
+}
+input[type="color"] {
+  width: 36px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  background: transparent;
+}

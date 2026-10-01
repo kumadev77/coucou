@@ -84,8 +84,11 @@ class SoundEngine {
     this.enabled = on;
   }
 
+  /** Sounds switched off one by one in the customization panel. */
+  muted = new Set<string>();
+
   play(name: SoundName | string) {
-    if (!this.enabled) return;
+    if (!this.enabled || this.muted.has(name)) return;
     const ctx = this.ctx;
     const master = this.master;
     const buf = this.buffers.get(name);

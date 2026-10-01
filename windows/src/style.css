@@ -817,10 +817,41 @@ input[type="range"]::-webkit-slider-thumb {
 .reply {
   font: 400 12.5px var(--font);
   color: #b0b5be;
-  white-space: pre-wrap;
   padding-right: 8px;
   user-select: text;
+  line-height: 1.45;
 }
+
+/* Markdown inside replies (views/markdown.ts). */
+.reply .md-p { margin: 0 0 6px; }
+.reply strong { color: var(--ink-2); font-weight: 600; }
+.reply .md-h { color: var(--ink-2); font-weight: 600; margin: 8px 0 4px; }
+.reply .md-h1 { font-size: 14px; }
+.reply .md-h2 { font-size: 13.5px; }
+.reply .md-h3 { font-size: 12.5px; }
+.reply .md-list { margin: 0 0 6px; padding-left: 18px; }
+.reply .md-list li { margin: 2px 0; }
+.reply .md-code {
+  font: 400 11.5px ui-monospace, Consolas, monospace;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+  padding: 1px 4px;
+}
+.reply .md-pre {
+  font: 400 11.5px ui-monospace, Consolas, monospace;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  padding: 6px 8px;
+  margin: 0 0 6px;
+  white-space: pre-wrap;
+}
+.reply .md-quote {
+  border-left: 2px solid rgba(255, 255, 255, 0.18);
+  padding-left: 8px;
+  margin: 0 0 6px;
+}
+.reply .md-hr { border: 0; border-top: 1px solid rgba(255, 255, 255, 0.12); margin: 8px 0; }
+.reply > :last-child { margin-bottom: 0; }
 
 .typing {
   display: flex;
@@ -1358,3 +1389,100 @@ input[type="range"]::-webkit-slider-thumb {
 .int-card.detail {
   padding-top: 8px;
 }
+
+/* "or choose a file…" under the drop zone tags: the fallback when dragging fails. */
+.drop-choose {
+  margin-top: 8px;
+  font-size: 11.5px;
+  color: #8e939c;
+  position: relative;
+  z-index: 1;
+}
+.drop-choose:hover { color: var(--ink-2); }
+
+/* ── Home (views/home.ts) ──────────────────────────────────────────────────── */
+
+.stack.home {
+  padding: 0 18px 0 118px;
+  gap: 10px;
+  justify-content: center;
+}
+
+.home-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+
+.home-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 4px 9px;
+  border: 0;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--ink-2);
+  cursor: default;
+  transition: background 0.15s, transform 0.15s;
+}
+.home-btn:hover { background: rgba(255, 255, 255, 0.13); }
+.home-btn:active { transform: scale(0.96); }
+
+.home-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--accent, rgba(99, 102, 241, 0.35));
+}
+.home-btn:nth-child(2) .home-icon { background: rgba(236, 72, 153, 0.35); }
+.home-btn:nth-child(3) .home-icon { background: rgba(245, 158, 11, 0.35); }
+.home-btn:nth-child(4) .home-icon { background: rgba(34, 197, 94, 0.35); }
+
+.home-label {
+  font: 500 11px var(--font);
+  color: #b0b5be;
+  white-space: nowrap;
+}
+
+/* Music / videos list */
+.media-body { gap: 8px; }
+.media-status:empty { display: none; }
+.media-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.media-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #b0b5be;
+  text-align: left;
+  cursor: default;
+  flex: 0 0 auto;
+}
+.media-row:hover { background: rgba(255, 255, 255, 0.08); color: var(--ink-2); }
+.media-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 400 12px var(--font);
+}
+.media-cat { font: 400 10.5px var(--font); color: #6b7079; }
+
+/* Quick web search */
+.ws-body { justify-content: center; }
+.ws-yt { color: #f87171; }

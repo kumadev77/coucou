@@ -25,11 +25,28 @@ pub const DEFAULT_MODEL: &str = "claude-opus-5";
 /// Local servers can take a while on CPU, so they get a longer leash.
 const LOCAL_TIMEOUT_SECS: u64 = 300;
 
+/// Who the model plays: the name and personality from the customization panel.
+pub struct Persona {
+    pub name: String,
+    pub personality: String,
+}
+
+impl Persona {
+    fn system_prompt(&self, base: &str) -> String {
+        let mut prompt = base.replace("Mochi", &self.name);
+        if !self.personality.is_empty() {
+            prompt.push_str("\n\nYour personality, as set by the user: ");
+            prompt.push_str(&self.personality);
+        }
+        prompt
+    }
+}
+
 /// Where a chat turn goes. Local servers speak the OpenAI-compatible
 /// /v1/chat/completions API (Ollama and llama.cpp's llama-server both do).
 pub enum Backend {
     Anthropic { model: String },
-    Local { name: &'static str, base_url: String, model: String },
+    Local { name: &'static str, base_url: String, model: String, thinking: bool },
 }
 
 const SYSTEM_PROMPT: &str = "You are Mochi, a personal AI assistant living at the top of the user's screen. \
@@ -60,6 +77,13 @@ impl Chat {
         self.messages.lock().unwrap().pop();
     }
 
+    /// A turn handled without the model (a launcher command), kept so the
+    /// model knows about it later in the chat.
+    pub fn record(&self, user: &str, reply: &str) {
+        self.push(json!({ "role": "user", "content": [{ "type": "text", "text": user }] }));
+        self.push(json!({ "role": "assistant", "content": [{ "type": "text", "text": reply }] }));
+    }
+
     fn snapshot(&self) -> Vec<Value> {
         self.messages.lock().unwrap().clone()
     }
@@ -83,13 +107,15 @@ pub struct ChatReply {
 pub async fn send(
     chat: &Chat,
     backend: &Backend,
+    persona: &Persona,
+    on_text: impl Fn(&str),
     query: String,
     context: Option<ChatContext>,
 ) -> Result<ChatReply, String> {
     let model = match backend {
         Backend::Anthropic { model } => model.as_str(),
-        Backend::Local { base_url, model, name } => {
-            return send_local(chat, base_url, model, name, query, context).await;
+        Backend::Local { base_url, model, name, thinking } => {
+            return send_local(chat, base_url, model, name, *thinking, persona, query, context, on_text).await;
         }
     };
     let key = secrets::get("anthropic-api-key")
@@ -101,7 +127,7 @@ pub async fn send(
     let body = json!({
         "model": model,
         "max_tokens": MAX_TOKENS,
-        "system": SYSTEM_PROMPT,
+        "system": persona.system_prompt(SYSTEM_PROMPT),
         "tools": [{ "type": "web_search_20260209", "name": "web_search", "max_uses": 5 }],
         "fallbacks": "default",
         "messages": chat.snapshot(),
@@ -220,22 +246,31 @@ async fn send_local(
     base_url: &str,
     model: &str,
     name: &str,
+    thinking: bool,
+    persona: &Persona,
     query: String,
     context: Option<ChatContext>,
+    on_text: impl Fn(&str),
 ) -> Result<ChatReply, String> {
     let content = first_turn_content(chat, query, &context);
     chat.push(json!({ "role": "user", "content": content }));
 
-    let mut messages = vec![json!({ "role": "system", "content": LOCAL_SYSTEM_PROMPT })];
+    let mut messages = vec![json!({ "role": "system", "content": persona.system_prompt(LOCAL_SYSTEM_PROMPT) })];
     messages.extend(chat.snapshot().iter().filter_map(to_openai_message));
 
-    let mut body = json!({ "messages": messages, "max_tokens": MAX_TOKENS, "stream": false });
+    let mut body = json!({ "messages": messages, "max_tokens": MAX_TOKENS, "stream": true });
     if !model.is_empty() {
         body["model"] = json!(model);
     }
+    // Turning thinking off is what makes reasoning models answer fast. Each
+    // server has its own switch; the other one ignores the unknown field.
+    if !thinking {
+        body["reasoning_effort"] = json!("none"); // Ollama
+        body["chat_template_kwargs"] = json!({ "enable_thinking": false }); // llama.cpp
+    }
 
     let url = format!("{}/v1/chat/completions", base_url.trim_end_matches('/'));
-    let response = match call_local(&url, name, &body).await {
+    let raw = match call_local(&url, name, &body, &on_text).await {
         Ok(v) => v,
         Err(err) => {
             chat.pop();
@@ -243,12 +278,7 @@ async fn send_local(
         }
     };
 
-    let text = response
-        .pointer("/choices/0/message/content")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .trim()
-        .to_string();
+    let text = strip_think(&raw).trim().to_string();
     if text.is_empty() {
         chat.pop();
         return Err("No response text.".into());
@@ -257,7 +287,23 @@ async fn send_local(
     Ok(ChatReply { text })
 }
 
-const LOCAL_SYSTEM_PROMPT: &str = "You are Mochi, a personal AI assistant living at the top of the user's screen. You can help with research, coding, recommendations, tasks and questions. You have no internet access. Respond in the user's language. Be thorough and complete. No markdown formatting (no **, no ##, no bullet dashes). Use plain text with line breaks.";
+const LOCAL_SYSTEM_PROMPT: &str = "You are Mochi, a personal AI assistant living at the top of the user's screen. You can help with research, coding, recommendations, tasks and questions. You have no internet access. Respond in the user's language. Keep answers short unless asked for detail. Light Markdown (bold, lists, code) is fine.";
+
+/// Drops <think>…</think> sections some servers leave inline in the answer.
+/// An unclosed <think> means the model ran out of tokens while still thinking.
+fn strip_think(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find("<think>") {
+        out.push_str(&rest[..start]);
+        match rest[start..].find("</think>") {
+            Some(end) => rest = &rest[start + end + "</think>".len()..],
+            None => return out,
+        }
+    }
+    out.push_str(rest);
+    out
+}
 
 /// Anthropic-format message → OpenAI-format message. Text blocks are kept,
 /// images become data URLs, tool blocks (from earlier Claude turns) are dropped.
@@ -292,20 +338,26 @@ fn to_openai_message(message: &Value) -> Option<Value> {
     }
     // Plain string when it's text only: some servers handle that more reliably.
     if parts.iter().all(|p| p["type"] == "text") {
-        let text = parts.iter().filter_map(|p| p["text"].as_str()).collect::<Vec<_>>().join("
-");
+        let text = parts.iter().filter_map(|p| p["text"].as_str()).collect::<Vec<_>>().join("\n");
         return Some(json!({ "role": role, "content": text }));
     }
     Some(json!({ "role": role, "content": parts }))
 }
 
-async fn call_local(url: &str, name: &str, body: &Value) -> Result<Value, String> {
+/// Streams the reply. Each time text arrives, `on_text` gets the whole visible
+/// answer so far (with any <think> section hidden). Returns the raw full text.
+async fn call_local(
+    url: &str,
+    name: &str,
+    body: &Value,
+    on_text: &impl Fn(&str),
+) -> Result<String, String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(LOCAL_TIMEOUT_SECS))
         .build()
         .map_err(|e| e.to_string())?;
 
-    let response = client
+    let mut response = client
         .post(url)
         .json(body)
         .send()
@@ -313,8 +365,8 @@ async fn call_local(url: &str, name: &str, body: &Value) -> Result<Value, String
         .map_err(|e| format!("Can't reach {name} at {url}. Is it running? ({e})"))?;
 
     let status = response.status();
-    let text = response.text().await.map_err(|e| e.to_string())?;
     if !status.is_success() {
+        let text = response.text().await.map_err(|e| e.to_string())?;
         let detail = serde_json::from_str::<Value>(&text)
             .ok()
             .and_then(|v| {
@@ -326,7 +378,40 @@ async fn call_local(url: &str, name: &str, body: &Value) -> Result<Value, String
             .unwrap_or_else(|| text.chars().take(200).collect());
         return Err(format!("{name} {status}: {detail}"));
     }
-    serde_json::from_str(&text).map_err(|e| format!("Bad {name} response: {e}"))
+
+    // Server-sent events: lines of `data: {json}`, ending with `data: [DONE]`.
+    let mut pending: Vec<u8> = Vec::new();
+    let mut raw = String::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|e| format!("{name} stopped mid-answer: {e}"))?
+    {
+        pending.extend_from_slice(&chunk);
+        let mut changed = false;
+        while let Some(end) = pending.iter().position(|&b| b == b'\n') {
+            let line: Vec<u8> = pending.drain(..=end).collect();
+            if let Some(delta) = sse_delta(&String::from_utf8_lossy(&line)) {
+                raw.push_str(&delta);
+                changed = true;
+            }
+        }
+        if changed {
+            on_text(strip_think(&raw).trim_start());
+        }
+    }
+    Ok(raw)
+}
+
+/// The answer text carried by one SSE line, if any. Reasoning arrives in a
+/// separate field (`reasoning_content`) and is ignored.
+fn sse_delta(line: &str) -> Option<String> {
+    let data = line.trim().strip_prefix("data:")?.trim();
+    if data == "[DONE]" {
+        return None;
+    }
+    let v: Value = serde_json::from_str(data).ok()?;
+    v.pointer("/choices/0/delta/content")?.as_str().map(str::to_string)
 }
 
 /// PDF → document block, image → image block, text/code → inline text.
@@ -385,7 +470,26 @@ fn base64(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::base64;
+    use super::{base64, sse_delta, strip_think};
+
+    #[test]
+    fn sse_delta_reads_content() {
+        assert_eq!(
+            sse_delta("data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n").as_deref(),
+            Some("Hi")
+        );
+        assert_eq!(sse_delta("data: [DONE]"), None);
+        assert_eq!(sse_delta(": keep-alive"), None);
+        assert_eq!(sse_delta("data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"x\"}}]}"), None);
+    }
+
+    #[test]
+    fn strip_think_removes_reasoning() {
+        assert_eq!(strip_think("<think>hmm</think>\nHi"), "\nHi");
+        assert_eq!(strip_think("Hi"), "Hi");
+        assert_eq!(strip_think("a<think>x</think>b<think>y</think>c"), "abc");
+        assert_eq!(strip_think("<think>never closed"), "");
+    }
 
     #[test]
     fn base64_matches_rfc4648_vectors() {

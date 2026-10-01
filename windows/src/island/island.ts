@@ -2,7 +2,7 @@
 // Mirrors IslandRootView.swift + IslandWindowController.swift.
 
 import { Tracked, Spring, clamp } from "../core/anim";
-import { Bridge, IS_TAURI, onDragDrop } from "../core/bridge";
+import { Bridge, IS_TAURI, onDragDrop, onEvent, type DroppedFile, type MochiAction } from "../core/bridge";
 import {
   EXPANDED_CORNER, EXPANDED_W, NOTCH_W, PANEL_H, PANEL_W,
   ROUNDED_CORNER, VIEW_LAYOUTS, botGlowColor, botGlowOpacity, botPosition, chatPromptHeight,
@@ -167,6 +167,11 @@ export class Island {
       },
       openSettingsWindow: () => void Bridge.openSettingsWindow(),
       blip: () => Sound.play("blip"),
+      chooseFile: () => void this.chooseFile(),
+      openMedia: (kind) => {
+        State.mediaKind = kind;
+        this.setView("media");
+      },
     };
 
     this.wakeStrip = h("div", { id: "wake-strip" });
@@ -373,10 +378,77 @@ export class Island {
           this.setView(State.defaultView());
           return;
         }
-        this.swallow(path);
+        this.swallow(path.split(/[\\/]/).pop() || "file", Bridge.ingestFile(path));
         break;
       }
     }
+  }
+
+  /**
+   * Drops handled by WebView2 itself. Tauri's own drop target never sees the
+   * file when WebView2 hosts its windows in a separate process (the "no drop"
+   * cursor), so the page accepts the drop and sends the bytes over.
+   */
+  private listenHtmlDrops() {
+    let depth = 0;
+    const hasFiles = (e: DragEvent) => Array.from(e.dataTransfer?.types ?? []).includes("Files");
+    window.addEventListener("dragenter", (e) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      if (depth++ === 0) this.onDragDrop({ type: "enter" });
+    });
+    window.addEventListener("dragover", (e) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault(); // without this the drop is refused
+      if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+    });
+    window.addEventListener("dragleave", (e) => {
+      if (!hasFiles(e)) return;
+      if (--depth <= 0) {
+        depth = 0;
+        this.onDragDrop({ type: "leave" });
+      }
+    });
+    window.addEventListener("drop", (e) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      depth = 0;
+      const file = e.dataTransfer?.files?.[0];
+      if (!file) {
+        this.onDragDrop({ type: "drop", paths: [] });
+        return;
+      }
+      State.fileDragOver = false;
+      void Bridge.log(`html drop ${file.name} ${file.size} bytes`);
+      this.swallow(file.name, Bridge.ingestBytes(file));
+    });
+  }
+
+  /** Mochi dresses up for what it just did. Off in the customization panel = no props. */
+  private react(action: MochiAction) {
+    if (!State.settings.mochiReactions) return;
+    switch (action) {
+      case "search":
+      case "youtube":
+        this.engine.setAccessory("glasses", 20);
+        break;
+      case "music":
+        this.engine.setAccessory("dance", 45);
+        break;
+      case "video":
+        this.engine.triggerEmote("happy");
+        break;
+      case "game":
+        this.engine.setAccessory("controller", 30);
+        break;
+    }
+    this.ensureRunning();
+  }
+
+  /** "Choose file…" button: same as a drop, through the Windows Open dialog. */
+  async chooseFile() {
+    const path = await Bridge.pickFile();
+    if (path) this.swallow(path.split(/[\\/]/).pop() || "file", Bridge.ingestFile(path));
   }
 
   /**
@@ -384,10 +456,10 @@ export class Island {
    * the inbox runs in the background and swaps the path in when it lands, so a
    * slow disk can never stall the animation — same as FileDropHandler on macOS.
    */
-  private swallow(path: string) {
-    const name = path.split(/[\\/]/).pop() || "file";
-    State.droppedFile = { name, path };
-    State.promptContext = { kind: "file", name, path };
+  private swallow(name: string, ingest: Promise<DroppedFile>) {
+    // The real path arrives with the copy; until then the name stands in.
+    State.droppedFile = { name, path: "" };
+    State.promptContext = { kind: "file", name, path: "" };
     State.chatHistory = [];
     void Bridge.chatReset();
 
@@ -404,7 +476,7 @@ export class Island {
     this.setView("uploading");
     this.ensureRunning();
 
-    void Bridge.ingestFile(path)
+    void ingest
       .then((file) => {
         State.droppedFile = { name: file.name, path: file.path };
         State.promptContext = { kind: "file", name: file.name, path: file.path };
@@ -550,6 +622,8 @@ export class Island {
     });
 
     void onDragDrop((e) => this.onDragDrop(e));
+    this.listenHtmlDrops();
+    void onEvent<MochiAction>("mochi-action", (a) => this.react(a));
 
     // Outside Tauri (plain browser) drive the cursor from DOM events so the
     // island can be inspected with `npm run dev`.
@@ -736,7 +810,9 @@ export class Island {
     const p = botPosition(State.mode, State.view, this.height.value, State.uploadProgress);
     this.botCx.target = p.cx;
     this.botCy.target = p.cy;
-    this.botSize.target = p.diameter / 0.6;
+    const scale = Math.min(1.3, Math.max(0.8, State.settings.mochiScale || 1));
+    // Only the big Mochi grows; the compact strip has no room for it.
+    this.botSize.target = (p.diameter * (State.mode === "expanded" ? scale : 1)) / 0.6;
 
     const greetingActive = State.mode === "expanded" && State.view === "greeting";
     // The drop canvas draws its own Mochi; two of them would overlap.
@@ -836,14 +912,16 @@ export class Island {
       if (on) view.sync();
     }
 
-    // The chat is the only view with a text field, so it is the only time the
-    // island is allowed to take keyboard focus.
+    // Only the views with a text field (chat, media search, web search) let the
+    // island take keyboard focus.
     if (this.lastSyncedView !== State.view) {
-      const wasChat = this.lastSyncedView === "prompt";
+      const typing = (v: IslandViewName | null) => v === "prompt" || v === "media" || v === "websearch";
+      const wasChat = typing(this.lastSyncedView);
       this.lastSyncedView = State.view;
-      if (State.view === "prompt") {
+      if (typing(State.view)) {
+        const view = State.view;
         void Bridge.focusWindow(true);
-        window.setTimeout(() => this.views.get("prompt")?.focus?.(), 120);
+        window.setTimeout(() => this.views.get(view)?.focus?.(), 120);
       } else if (wasChat) {
         void Bridge.focusWindow(false);
       }
@@ -871,8 +949,15 @@ export class Island {
 
   /** Applies settings coming from Rust at boot. */
   applySettings() {
-    Sound.setEnabled(State.settings.soundEnabled);
-    Sound.setVolume(State.settings.soundVolume);
+    const s = State.settings;
+    Sound.setEnabled(s.soundEnabled);
+    Sound.setVolume(s.soundVolume);
+    Sound.muted = new Set(s.mutedSounds);
+    this.engine.setSkin(s.mochiBody || null);
+    this.engine.setEyes(s.mochiEyes || null);
+    if (s.mochiAccent) document.documentElement.style.setProperty("--accent", `${s.mochiAccent}66`);
+    else document.documentElement.style.removeProperty("--accent");
+    this.ensureRunning();
     this.fsm.homeToPetitDelay = State.settings.autoCloseInterval;
     State.notify();
   }

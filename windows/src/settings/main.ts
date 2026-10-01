@@ -6,6 +6,7 @@ import "./settings.css";
 import { Bridge, onEvent, type HookStatus } from "../core/bridge";
 import { DEFAULT_SETTINGS, type Settings } from "../core/state";
 import { h, clear } from "../views/dom";
+import { gamesSection, mediaSection, mochiSection } from "./assistant";
 
 let settings: Settings = { ...DEFAULT_SETTINGS };
 let version = "";
@@ -319,6 +320,16 @@ function localRows(
     h("span", { class: "hint", text: `${hint} Runs on your machine, no internet access, PDFs not supported.` }),
     h("div", { class: "row" }, h("label", { text: "Server" }), input(urlKey, "http://localhost:…")),
     h("div", { class: "row" }, h("label", { text: "Model" }), input(modelKey, modelPlaceholder)),
+    h(
+      "div",
+      { class: "row" },
+      h("label", { text: "Thinking" }),
+      toggle(settings.localThinking, (on) => {
+        settings.localThinking = on;
+        void save();
+      }),
+      h("span", { class: "hint", text: "Off answers faster. Only matters for reasoning models." }),
+    ),
   );
 }
 
@@ -511,6 +522,9 @@ async function main() {
     h("h1", {}, h("span", { text: "Coucou" }), h("span", { class: "version", text: version })),
     claudeSection(status),
     apiSection(hasKey),
+    mochiSection(settings, () => void save()),
+    mediaSection(settings, () => void save()),
+    gamesSection(settings, () => void save()),
     integrationsSection(present),
     generalSection(),
     h("div", {

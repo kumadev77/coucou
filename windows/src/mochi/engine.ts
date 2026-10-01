@@ -14,6 +14,9 @@ export type EyeShape =
   | "pill" | "wide" | "dot" | "line" | "flat" | "happy" | "closed"
   | "spiral" | "heart" | "star" | "tired" | "wink" | "cup";
 
+/** Props Mochi wears while doing something: glasses, music, a game controller. */
+export type Accessory = "none" | "glasses" | "dance" | "controller";
+
 export type BadgeKind = "dots" | "bang" | "question" | "dot";
 
 export interface Badge {
@@ -168,6 +171,44 @@ export class BotEngine {
   isMini = false;
   /** Solid body colour for mini bots / integration pills (null = Mochi gradient). */
   bodyColor: RGB | null = null;
+
+  /** Customization panel colours (Mochi itself, not the mini bots). */
+  skinTop: RGB = BASE_TOP;
+  skinBottom: RGB = BASE_BOTTOM;
+  ink = INK;
+
+  accessory: Accessory = "none";
+  private accessoryUntil = 0;
+  private accessoryStart = 0;
+
+  /** Body colour from a hex string; null or "" restores Mochi's own grey. */
+  setSkin(hex: string | null) {
+    if (!hex) {
+      this.skinTop = BASE_TOP;
+      this.skinBottom = BASE_BOTTOM;
+      return;
+    }
+    const c = hexToRGB(hex);
+    this.skinTop = mix3(c, [1, 1, 1], 0.45);
+    this.skinBottom = c;
+  }
+
+  /** Eye colour from a hex string; null or "" restores the dark ink. */
+  setEyes(hex: string | null) {
+    this.ink = hex ? rgba(hexToRGB(hex)) : INK;
+  }
+
+  /** Wears `a` for `seconds`, then goes back to normal. */
+  setAccessory(a: Accessory, seconds: number) {
+    this.accessory = a;
+    this.accessoryStart = now();
+    this.accessoryUntil = now() + seconds;
+  }
+
+  private activeAccessory(): Accessory {
+    if (this.accessory !== "none" && now() > this.accessoryUntil) this.accessory = "none";
+    return this.isMini || this.morph > 0.25 ? "none" : this.accessory;
+  }
 
   // Animated state (BotEngine `s`)
   yaw = 0; pitch = 0; roll = 0; tilt = 0; open = 1;
@@ -457,6 +498,8 @@ export class BotEngine {
     return (
       this.tweens.size > 0 ||
       this.particles.length > 0 ||
+      // Until the prop comes off (one extra frame clears it from the canvas).
+      (this.accessory !== "none" && now() < this.accessoryUntil + 0.1) ||
       this.cfg.bounces || this.cfg.scans || this.cfg.breathes || this.cfg.zz || this.cfg.sweat ||
       this.isMini ||
       Math.abs(this.tgYaw - this.yaw) > 0.002 ||
@@ -644,9 +687,18 @@ export class BotEngine {
     const R = W * 0.3;
     const rx = R * 1.14;
     const ry = R * 0.88;
+    const acc = this.activeAccessory();
+    // Dancing: a bounce on every beat (2 per second) and a sway every two.
+    const beat = acc === "dance" ? (now() - this.accessoryStart) * Math.PI * 2 : 0;
+    const bob = acc === "dance" ? -Math.abs(Math.sin(beat)) * R * 0.12 : 0;
+    const sway = acc === "dance" ? Math.sin(beat / 2) * 0.16 : 0;
     const cx = W / 2 + this.ox * R;
-    const cy = H / 2 + this.particleOverhang / 2 + this.oy * R + R * 0.06;
+    const cy = H / 2 + this.particleOverhang / 2 + this.oy * R + R * 0.06 + bob;
 
+    const savedHands = this.hands;
+    if (acc === "controller") this.hands = Math.max(this.hands, 1);
+    const savedTilt = this.tilt;
+    this.tilt += sway;
     this.drawHandsBehind(x, R, rx, ry, cx, cy);
 
     x.save();
@@ -673,13 +725,103 @@ export class BotEngine {
 
     this.drawEyes(x, body, R, rx, ry);
     if (this.morph > 0.05) this.drawMouth(x, body, R);
+    if (acc === "glasses") this.drawGlasses(x, R, rx, ry);
+    if (acc === "controller") this.drawController(x, rx, ry);
 
     x.restore();
+    this.tilt = savedTilt;
+    this.hands = savedHands;
+    if (acc === "dance") this.drawNotes(x, R, cx, cy, beat);
 
     if (this.badge && this.badgeS > 0.01 && this.morph < 0.25) {
       this.drawBadge(x, this.badge, R, cx, cy);
     }
     this.drawParticles(x, R, cx, cy);
+  }
+
+  /** Round glasses over the eyes, following them as Mochi turns. */
+  private drawGlasses(x: CanvasRenderingContext2D, R: number, rx: number, ry: number) {
+    const lens: { x: number; y: number; r: number }[] = [];
+    for (const sd of [-1, 1]) {
+      const eyeYaw = sd * EYE_SP + this.yaw;
+      const eyePitch = EYE_P + this.pitch + this.roll;
+      const cp = Math.cos(eyePitch);
+      if (Math.cos(eyeYaw) * cp <= 0.04) continue;
+      lens.push({
+        x: Math.sin(eyeYaw) * cp * rx,
+        y: -Math.sin(eyePitch) * ry,
+        r: R * EYE_H * 1.25 * Math.max(0.4, Math.cos(eyeYaw)),
+      });
+    }
+    x.save();
+    x.lineWidth = Math.max(1.2, R * 0.06);
+    x.strokeStyle = "rgba(30,30,36,0.95)";
+    x.fillStyle = "rgba(160,200,255,0.18)";
+    for (const l of lens) {
+      x.beginPath();
+      x.arc(l.x, l.y, l.r, 0, Math.PI * 2);
+      x.fill();
+      x.stroke();
+    }
+    if (lens.length === 2) {
+      const [a, b] = lens;
+      x.beginPath();
+      x.moveTo(a.x + a.r, a.y);
+      x.quadraticCurveTo((a.x + b.x) / 2, a.y - R * 0.08, b.x - b.r, b.y);
+      x.stroke();
+    }
+    x.restore();
+  }
+
+  /** A small gamepad held in front of the body, between the hands. */
+  private drawController(x: CanvasRenderingContext2D, rx: number, ry: number) {
+    const w = rx * 1.35;
+    const h = ry * 0.5;
+    const top = ry * 0.45;
+    x.save();
+    x.fillStyle = "rgb(44,46,56)";
+    roundRectPath(x, -w / 2, top, w, h, h * 0.45);
+    x.fill();
+    // D-pad
+    const u = h * 0.16;
+    x.fillStyle = "rgb(150,155,170)";
+    x.fillRect(-w * 0.3 - u * 1.5, top + h / 2 - u / 2, u * 3, u);
+    x.fillRect(-w * 0.3 - u / 2, top + h / 2 - u * 1.5, u, u * 3);
+    // Buttons
+    const colours = ["#f87171", "#60a5fa", "#4ade80", "#facc15"];
+    const offs: [number, number][] = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+    offs.forEach(([dx, dy], i) => {
+      x.fillStyle = colours[i];
+      x.beginPath();
+      x.arc(w * 0.3 + dx * u * 1.2, top + h / 2 + dy * u * 1.2, u * 0.55, 0, Math.PI * 2);
+      x.fill();
+    });
+    x.restore();
+  }
+
+  /** Music notes drifting up around Mochi while it dances. */
+  private drawNotes(x: CanvasRenderingContext2D, R: number, cx: number, cy: number, beat: number) {
+    x.save();
+    x.fillStyle = "rgba(244,114,182,0.9)";
+    x.strokeStyle = "rgba(244,114,182,0.9)";
+    x.lineWidth = Math.max(1, R * 0.05);
+    for (let i = 0; i < 3; i++) {
+      const t = ((beat / (Math.PI * 2)) * 0.5 + i / 3) % 1; // 0..1 rise
+      const side = i % 2 === 0 ? 1 : -1;
+      const nx = cx + side * R * (1.25 + 0.15 * Math.sin(beat + i));
+      const ny = cy - R * 0.2 - t * R * 1.1;
+      const s = R * 0.13;
+      x.globalAlpha = Math.sin(t * Math.PI);
+      x.beginPath();
+      x.ellipse(nx, ny, s, s * 0.75, -0.4, 0, Math.PI * 2);
+      x.fill();
+      x.beginPath();
+      x.moveTo(nx + s * 0.9, ny);
+      x.lineTo(nx + s * 0.9, ny - s * 2.6);
+      x.lineTo(nx + s * 1.9, ny - s * 2.1);
+      x.stroke();
+    }
+    x.restore();
   }
 
   private bodyPath(rx: number, ry: number, R: number): Path2D {
@@ -718,8 +860,8 @@ export class BotEngine {
       return;
     }
     const g = x.createLinearGradient(rx * 0.7, -ry * 0.85, -rx * 0.8, ry * 0.9);
-    g.addColorStop(0, rgba(BASE_TOP));
-    g.addColorStop(1, rgba(BASE_BOTTOM));
+    g.addColorStop(0, rgba(this.skinTop));
+    g.addColorStop(1, rgba(this.skinBottom));
     x.fillStyle = g;
     x.fill(body);
 
@@ -755,7 +897,7 @@ export class BotEngine {
 
     x.save();
     x.clip(body);
-    const ink = this.isMini ? MINI_INK : INK;
+    const ink = this.isMini ? MINI_INK : this.ink;
     x.fillStyle = ink;
     x.strokeStyle = ink;
 
@@ -987,8 +1129,8 @@ export class BotEngine {
         g.addColorStop(0, rgba(mix3(this.bodyColor, [1, 1, 1], 0.35)));
         g.addColorStop(1, rgba(this.bodyColor));
       } else {
-        g.addColorStop(0, rgba(BASE_TOP));
-        g.addColorStop(1, rgba(BASE_BOTTOM));
+        g.addColorStop(0, rgba(this.skinTop));
+        g.addColorStop(1, rgba(this.skinBottom));
       }
       x.beginPath();
       x.ellipse(0, 0, hew, heh, 0, 0, Math.PI * 2);

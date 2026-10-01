@@ -27,9 +27,14 @@ function dashedFrame(): SVGSVGElement {
   return el;
 }
 
-export function buildUpload(): ViewHost {
+export function buildUpload(actions: ViewActions): ViewHost {
   const frame = dashedFrame();
   const title = h("div", { class: "drop-title", text: "Drop your files here" });
+  const choose = h("button", {
+    class: "link-btn drop-choose",
+    text: "or choose a file…",
+    onclick: () => actions.chooseFile(),
+  });
   const tags = h(
     "div",
     { class: "drop-tags" },
@@ -39,7 +44,7 @@ export function buildUpload(): ViewHost {
     "div",
     { class: "card drop-card" },
     frame,
-    h("div", { class: "drop-body" }, title, tags),
+    h("div", { class: "drop-body" }, title, tags, choose),
   );
   const el = h("div", { class: "view" }, card);
 

@@ -98,6 +98,37 @@ export interface Settings {
   ollamaModel: string;
   llamacppUrl: string;
   llamacppModel: string;
+  /** Let local reasoning models think first. Off = faster replies. */
+  localThinking: boolean;
+  /** Folders searched by "pon / reproduce", grouped by category. */
+  mediaCategories: MediaCategory[];
+  /** Empty = PotPlayer found in the registry. */
+  potplayerPath: string;
+  games: Game[];
+  /** Customization panel. Empty colours = Mochi's own. */
+  mochiName: string;
+  mochiBody: string;
+  mochiEyes: string;
+  mochiAccent: string;
+  mochiPersonality: string;
+  /** 0.8 to 1.3 */
+  mochiScale: number;
+  mutedSounds: string[];
+  /** Glasses when searching, dancing to music, a controller for games. */
+  mochiReactions: boolean;
+}
+
+export interface MediaCategory {
+  name: string;
+  kind: "music" | "video";
+  folders: string[];
+}
+
+export interface Game {
+  name: string;
+  keywords: string[];
+  /** .exe, .lnk / .url shortcut, or a steam:// link. */
+  path: string;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -117,13 +148,27 @@ export const DEFAULT_SETTINGS: Settings = {
   ollamaModel: "",
   llamacppUrl: "http://localhost:8080",
   llamacppModel: "",
+  localThinking: false,
+  mediaCategories: [],
+  potplayerPath: "",
+  games: [],
+  mochiName: "Mochi",
+  mochiBody: "",
+  mochiEyes: "",
+  mochiAccent: "",
+  mochiPersonality: "",
+  mochiScale: 1,
+  mutedSounds: [],
+  mochiReactions: true,
 };
 
 type Listener = () => void;
 
 class AppState {
   mode: IslandMode = "hidden";
-  view: IslandViewName = "overview";
+  view: IslandViewName = "empty";
+  /** Which list the music / videos screen shows. */
+  mediaKind: "music" | "video" = "music";
 
   tasks: AgentTask[] = [];
   focusId: string | null = null;
@@ -240,7 +285,8 @@ class AppState {
   }
 
   defaultView(): IslandViewName {
-    return this.tasks.length === 0 ? "empty" : "overview";
+    // The home ("empty") replaced the Claude Code overview on this build.
+    return "empty";
   }
 }
 

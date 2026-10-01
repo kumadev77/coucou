@@ -2,8 +2,9 @@
 // IslandViewContent.swift.
 
 import { h, svg, clear } from "./dom";
+import { renderMarkdown } from "./markdown";
 import { ICONS } from "./icons";
-import { Bridge, type ChatContext } from "../core/bridge";
+import { Bridge, onEvent, type ChatContext } from "../core/bridge";
 import { Sound } from "../core/sound";
 import { State, type ChatMessage } from "../core/state";
 import type { ViewHost } from "./views";
@@ -18,7 +19,7 @@ function bubble(message: ChatMessage): HTMLElement {
       h("div", { class: "bubble", text: message.content }),
     );
   }
-  return h("div", { class: "chat-row" }, h("div", { class: "reply", text: message.content }));
+  return h("div", { class: "chat-row" }, h("div", { class: "reply" }, renderMarkdown(message.content)));
 }
 
 function typingDots(): HTMLElement {
@@ -58,6 +59,25 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
   let sending = false;
   let renderedCount = -1;
 
+  // Local models stream their answer: the reply grows in place instead of
+  // landing as one block. `streaming` is the message being written.
+  let streaming: ChatMessage | null = null;
+  void onEvent<string>("chat-stream", (text) => {
+    if (!sending) return;
+    if (!streaming) {
+      streaming = { id: nextId++, role: "assistant", content: "" };
+      State.chatHistory.push(streaming);
+      State.stateOverride = null; // the text itself replaces the typing dots
+      State.notify();
+      onHeightChange();
+    }
+    streaming.content = text;
+    const replies = log.querySelectorAll(".reply");
+    const last = replies[replies.length - 1];
+    if (last) last.replaceChildren(renderMarkdown(text));
+    log.scrollTop = log.scrollHeight;
+  });
+
   async function submit() {
     const query = input.value.trim();
     if (!query || sending) return;
@@ -76,15 +96,19 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
 
     try {
       const reply = await Bridge.chatSend(query, context);
-      State.chatHistory.push({ id: nextId++, role: "assistant", content: reply.text });
+      if (streaming) streaming.content = reply.text;
+      else State.chatHistory.push({ id: nextId++, role: "assistant", content: reply.text });
       State.stateOverride = null;
       Sound.play("finish");
     } catch (err) {
+      // A half-written answer that then failed is not kept.
+      if (streaming) State.chatHistory.splice(State.chatHistory.indexOf(streaming), 1);
       State.stateOverride = null;
       State.noteMessage = String(err).replace(/^Error:\s*/, "");
       State.view = "note";
       Sound.play("error");
     } finally {
+      streaming = null;
       sending = false;
       State.notify();
       onHeightChange();

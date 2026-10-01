@@ -67,6 +67,47 @@ pub fn ingest(source: &str) -> Result<DroppedFile, String> {
     })
 }
 
+/// Largest file accepted from a webview drop: the bytes cross the IPC bridge.
+pub const MAX_DROP_BYTES: usize = 100 * 1024 * 1024;
+
+/// A file dropped onto the webview arrives as bytes (WebView2 doesn't hand the
+/// page its path). Written into the inbox under its own name, never overwriting.
+pub fn ingest_bytes(name: &str, bytes: &[u8]) -> Result<DroppedFile, String> {
+    if bytes.len() > MAX_DROP_BYTES {
+        return Err("That file is too big to drop (100 MB max).".into());
+    }
+    // Only the last path component, so a crafted name can't climb out of the inbox.
+    let name = Path::new(name)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .filter(|n| !n.is_empty() && n != "." && n != "..")
+        .unwrap_or_else(|| "file".into());
+
+    let dir = inbox_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let mut dest = dir.join(&name);
+    if dest.exists() {
+        let p = Path::new(&name);
+        let stem = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        let ext = p.extension().map(|s| format!(".{}", s.to_string_lossy())).unwrap_or_default();
+        for i in 2..1000 {
+            let candidate = dir.join(format!("{stem} ({i}){ext}"));
+            if !candidate.exists() {
+                dest = candidate;
+                break;
+            }
+        }
+    }
+    std::fs::write(&dest, bytes).map_err(|e| format!("cannot save: {e}"))?;
+    sweep(&dir);
+
+    Ok(DroppedFile {
+        name,
+        path: dest.to_string_lossy().to_string(),
+        size: bytes.len() as u64,
+    })
+}
+
 /// Drops anything copied here more than a week ago. `ingest` stamps every copy
 /// with the time it landed, so this really is the age of the copy and not the
 /// age of whatever the user happened to drag in.

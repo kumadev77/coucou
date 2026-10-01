@@ -1,10 +1,12 @@
 // Coucou for Windows — app wiring and the commands the island calls.
 
 mod claude;
+mod dialog;
 mod files;
 mod hooks;
 mod integrations;
 mod island;
+mod launcher;
 mod log;
 mod pipe;
 mod secrets;
@@ -243,13 +245,88 @@ fn approval_decline(app: AppHandle, request_id: String) {
 /// One chat turn. The API key and any file bytes stay on the Rust side.
 #[tauri::command]
 async fn chat_send(
+    app: AppHandle,
     shared: State<'_, Shared>,
     chat: State<'_, Chat>,
     query: String,
     context: Option<ChatContext>,
 ) -> Result<ChatReply, String> {
-    let backend = shared.settings.lock().unwrap().chat_backend();
-    claude::send(&chat, &backend, query, context).await
+    // "abre lol", "pon <canción>", "busca <algo>": done right here, no model.
+    if context.is_none() {
+        let settings = shared.settings.lock().unwrap().clone();
+        if let Some(result) = launcher::handle_command(&settings, &query) {
+            return match result {
+                Ok(done) => {
+                    chat.record(&query, &done.reply);
+                    let _ = app.emit("mochi-action", done.action);
+                    Ok(ChatReply { text: done.reply })
+                }
+                Err(err) => Err(err),
+            };
+        }
+    }
+    let (backend, persona) = {
+        let s = shared.settings.lock().unwrap();
+        (s.chat_backend(), s.persona())
+    };
+    // Local providers stream: the island shows the answer as it's written.
+    let on_text = |text: &str| {
+        let _ = app.emit("chat-stream", text);
+    };
+    claude::send(&chat, &backend, &persona, on_text, query, context).await
+}
+
+// ── Launcher: media, games, web ───────────────────────────────────────────────
+
+#[tauri::command]
+fn media_search(shared: State<Shared>, kind: launcher::MediaKind, query: String) -> Vec<launcher::MediaItem> {
+    let settings = shared.settings.lock().unwrap().clone();
+    launcher::search_media(&settings, kind, &query)
+}
+
+#[tauri::command]
+fn media_open(app: AppHandle, shared: State<Shared>, path: String, kind: launcher::MediaKind) -> Result<(), String> {
+    let settings = shared.settings.lock().unwrap().clone();
+    launcher::open_media(&settings, &path)?;
+    let action = match kind {
+        launcher::MediaKind::Music => launcher::Action::Music,
+        launcher::MediaKind::Video => launcher::Action::Video,
+    };
+    let _ = app.emit("mochi-action", action);
+    Ok(())
+}
+
+#[tauri::command]
+fn web_search(app: AppHandle, query: String) -> Result<(), String> {
+    launcher::web_search(&query)?;
+    let _ = app.emit("mochi-action", launcher::Action::Search);
+    Ok(())
+}
+
+#[tauri::command]
+fn game_launch(app: AppHandle, shared: State<Shared>, name: String) -> Result<(), String> {
+    let settings = shared.settings.lock().unwrap().clone();
+    let game = settings
+        .games
+        .iter()
+        .find(|g| g.name == name)
+        .ok_or_else(|| format!("No game called {name}."))?;
+    launcher::launch_game(game)?;
+    let _ = app.emit("mochi-action", launcher::Action::Game);
+    Ok(())
+}
+
+#[tauri::command]
+fn youtube_search(app: AppHandle, query: String) -> Result<(), String> {
+    launcher::youtube_search(&query)?;
+    let _ = app.emit("mochi-action", launcher::Action::Youtube);
+    Ok(())
+}
+
+/// PotPlayer found in the registry, for the settings window to show.
+#[tauri::command]
+fn potplayer_detect() -> Option<String> {
+    launcher::detect_potplayer().map(|p| p.to_string_lossy().to_string())
 }
 
 #[tauri::command]
@@ -261,6 +338,47 @@ fn chat_reset(chat: State<Chat>) {
 #[tauri::command]
 fn ingest_file(path: String) -> Result<DroppedFile, String> {
     files::ingest(&path)
+}
+
+/// A file dropped onto the webview: raw bytes in the body, the file name
+/// (URI-encoded) in the `x-file-name` header.
+#[tauri::command]
+fn ingest_bytes(request: tauri::ipc::Request<'_>) -> Result<DroppedFile, String> {
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("Expected the file's bytes.".into());
+    };
+    let name = request
+        .headers()
+        .get("x-file-name")
+        .and_then(|v| v.to_str().ok())
+        .map(percent_decode)
+        .unwrap_or_else(|| "file".into());
+    files::ingest_bytes(&name, bytes)
+}
+
+/// encodeURIComponent, undone.
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).to_string()
+}
+
+/// "Choose file…": the standard Windows open dialog. Works even where dragging doesn't.
+#[tauri::command]
+async fn pick_file() -> Option<String> {
+    tauri::async_runtime::spawn_blocking(dialog::open_file).await.ok().flatten()
 }
 
 /// The island may only ask whether a key exists — never read it.
@@ -399,6 +517,14 @@ pub fn run() {
             log_line,
             chat_send,
             chat_reset,
+            ingest_bytes,
+            pick_file,
+            media_search,
+            media_open,
+            web_search,
+            youtube_search,
+            game_launch,
+            potplayer_detect,
             ingest_file,
             secret_present,
             secret_set,
