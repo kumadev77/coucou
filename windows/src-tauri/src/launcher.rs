@@ -159,12 +159,52 @@ pub fn find_game<'a>(settings: &'a Settings, query: &str) -> Option<&'a Game> {
                 1000
             } else {
                 let hay = format!("{} {}", g.name, g.keywords.join(" "));
-                match_score(&words, &hay, &g.name)
+                match match_score(&words, &hay, &g.name) {
+                    // Speech recognition spells names its own way ("mortal combat ex"):
+                    // fall back to how close the whole name sounds.
+                    0 => std::iter::once(&g.name)
+                        .chain(g.keywords.iter())
+                        .map(|k| (similarity(&sound_key(&q), &sound_key(&normalize_words(k).join(" "))) * 100.0) as u32)
+                        .max()
+                        .filter(|&pct| pct >= 75)
+                        .unwrap_or(0),
+                    s => s,
+                }
             };
             (score > 0).then_some((score, g))
         })
         .max_by_key(|(s, _)| *s)
         .map(|(_, g)| g)
+}
+
+/// Spelling differences that sound the same: k/c, "ex"/"x", spaces.
+fn sound_key(s: &str) -> String {
+    s.replace("ph", "f")
+        .replace("ex", "x")
+        .replace(['k', 'q'], "c")
+        .replace(['z'], "s")
+        .replace(['y'], "i")
+        .replace(' ', "")
+}
+
+/// 1.0 = identical, from the edit distance.
+fn similarity(a: &str, b: &str) -> f64 {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let longest = a.len().max(b.len());
+    if longest == 0 {
+        return 1.0;
+    }
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.iter().enumerate() {
+        let mut cur = vec![i + 1; b.len() + 1];
+        for (j, cb) in b.iter().enumerate() {
+            let cost = usize::from(ca != cb);
+            cur[j + 1] = (prev[j] + cost).min(prev[j + 1] + 1).min(cur[j] + 1);
+        }
+        prev = cur;
+    }
+    1.0 - prev[b.len()] as f64 / longest as f64
 }
 
 pub fn launch_game(game: &Game) -> Result<(), String> {
@@ -425,6 +465,8 @@ mod tests {
         assert_eq!(find_game(&s, "LoL").map(|g| g.name.as_str()), Some("League of Legends"));
         assert_eq!(find_game(&s, "minecraft").map(|g| g.name.as_str()), Some("Minecraft"));
         assert!(find_game(&s, "tetris").is_none());
+        s.games.push(Game { name: "Mortal Kombat X".into(), keywords: vec![], path: "z".into() });
+        assert_eq!(find_game(&s, "mortal combat ex").map(|g| g.name.as_str()), Some("Mortal Kombat X"));
     }
 
     #[test]

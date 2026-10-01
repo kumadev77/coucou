@@ -31,16 +31,18 @@ export function mediaSection(settings: Settings, save: Save): HTMLElement {
     settings.mediaCategories.forEach((cat, i) => list.append(categoryCard(cat, i)));
   }
 
-  function categoryCard(cat: MediaCategory, index: number): HTMLElement {
+  function categoryCard(initial: MediaCategory, index: number): HTMLElement {
+    // Always the live object: settings arrays are replaced when a save echoes back.
+    const cat = () => settings.mediaCategories[index] ?? initial;
     const kind = h("select", {}) as HTMLSelectElement;
     kind.append(h("option", { value: "music", text: "Música" }), h("option", { value: "video", text: "Video" }));
-    kind.value = cat.kind;
+    kind.value = initial.kind;
     kind.addEventListener("change", () => {
-      cat.kind = kind.value as MediaCategory["kind"];
+      cat().kind = kind.value as MediaCategory["kind"];
       save();
     });
-    const name = textInput(cat.name, "Nombre (Películas, Series, Anime…)", (v) => {
-      cat.name = v || "Media";
+    const name = textInput(initial.name, "Nombre (Películas, Series, Anime…)", (v) => {
+      cat().name = v || "Media";
       save();
     });
     const remove = h("button", { class: "danger", text: "Quitar" });
@@ -53,14 +55,14 @@ export function mediaSection(settings: Settings, save: Save): HTMLElement {
     const folders = h("div", { class: "stack-list" });
     const drawFolders = () => {
       clear(folders);
-      cat.folders.forEach((folder, fi) => {
+      cat().folders.forEach((folder, fi) => {
         const input = textInput(folder, "C:\\Users\\…\\Videos", (v) => {
-          cat.folders[fi] = v;
+          cat().folders[fi] = v;
           save();
         });
         const x = h("button", { text: "×", title: "Quitar carpeta" });
         x.addEventListener("click", () => {
-          cat.folders.splice(fi, 1);
+          cat().folders.splice(fi, 1);
           save();
           drawFolders();
         });
@@ -68,11 +70,12 @@ export function mediaSection(settings: Settings, save: Save): HTMLElement {
       });
       const add = h("button", { text: "+ Carpeta" });
       add.addEventListener("click", () => {
-        cat.folders.push("");
+        cat().folders.push("");
+        save();
         drawFolders();
-        (folders.querySelectorAll("input")[cat.folders.length - 1] as HTMLInputElement | undefined)?.focus();
+        (folders.querySelectorAll("input")[cat().folders.length - 1] as HTMLInputElement | undefined)?.focus();
       });
-      folders.append(h("div", { class: "row" }, h("label", { text: cat.folders.length ? "" : "Carpetas" }), add));
+      folders.append(h("div", { class: "row" }, h("label", { text: cat().folders.length ? "" : "Carpetas" }), add));
     };
     drawFolders();
 
@@ -130,17 +133,19 @@ export function gamesSection(settings: Settings, save: Save): HTMLElement {
     settings.games.forEach((game, i) => list.append(gameCard(game, i)));
   }
 
-  function gameCard(game: Game, index: number): HTMLElement {
-    const name = textInput(game.name, "Nombre", (v) => {
-      game.name = v;
+  function gameCard(initial: Game, index: number): HTMLElement {
+    // Always the live object: settings arrays are replaced when a save echoes back.
+    const game = () => settings.games[index] ?? initial;
+    const name = textInput(initial.name, "Nombre", (v) => {
+      game().name = v;
       save();
     });
-    const keywords = textInput(game.keywords.join(", "), "lol, league (separadas por comas)", (v) => {
-      game.keywords = v.split(",").map((k) => k.trim()).filter(Boolean);
+    const keywords = textInput(initial.keywords.join(", "), "lol, league (separadas por comas)", (v) => {
+      game().keywords = v.split(",").map((k) => k.trim()).filter(Boolean);
       save();
     });
-    const path = textInput(game.path, "C:\\…\\juego.exe, acceso directo o steam://rungameid/…", (v) => {
-      game.path = v;
+    const path = textInput(initial.path, "C:\\…\\juego.exe, acceso directo o steam://rungameid/…", (v) => {
+      game().path = v;
       save();
     });
     const browse = h("button", { text: "Elegir…" });
@@ -148,10 +153,10 @@ export function gamesSection(settings: Settings, save: Save): HTMLElement {
       const picked = await Bridge.pickFile();
       if (picked) {
         path.value = picked;
-        game.path = picked;
-        if (!game.name) {
-          game.name = picked.split(/[\\/]/).pop()!.replace(/\.(exe|lnk|url)$/i, "");
-          name.value = game.name;
+        game().path = picked;
+        if (!game().name) {
+          game().name = picked.split(/[\\/]/).pop()!.replace(/\.(exe|lnk|url)$/i, "");
+          name.value = game().name;
         }
         save();
       }
@@ -161,7 +166,7 @@ export function gamesSection(settings: Settings, save: Save): HTMLElement {
     test.addEventListener("click", async () => {
       feedback.textContent = "";
       try {
-        await Bridge.gameLaunch(game.name);
+        await Bridge.gameLaunch(game().name);
       } catch (err) {
         feedback.textContent = String(err).replace(/^Error:\s*/, "");
       }

@@ -634,6 +634,7 @@ export class Island {
     });
 
     window.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") void Bridge.voiceStop(); // Escape also hushes Mochi
       if (e.key === "Escape" && State.mode === "expanded" && !State.isPinned) this.collapse();
       State.lastActivity = performance.now();
     });

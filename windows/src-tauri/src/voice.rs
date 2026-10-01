@@ -45,6 +45,8 @@ struct Lang {
     /// Piper voice path inside the piper-voices repo, without ".onnx".
     voice: &'static str,
     wake_words: &'static [&'static str],
+    /// Said while Mochi talks: it stops. Words its answers rarely contain.
+    stop_words: &'static [&'static str],
 }
 
 const LANGS: &[Lang] = &[
@@ -54,6 +56,7 @@ const LANGS: &[Lang] = &[
         model_dir: "vosk-model-small-en-us-0.15",
         voice: "en/en_US/lessac/medium/en_US-lessac-medium",
         wake_words: &["hey", "hi", "okay"],
+        stop_words: &["stop", "quiet", "shut up", "enough"],
     },
     Lang {
         code: "es",
@@ -61,6 +64,7 @@ const LANGS: &[Lang] = &[
         model_dir: "vosk-model-small-es-0.42",
         voice: "es/es_MX/claude/high/es_MX-claude-high",
         wake_words: &["oye", "hey", "hola"],
+        stop_words: &["basta", "silencio", "calla", "stop"],
     },
 ];
 
@@ -405,8 +409,11 @@ fn listen(app: &AppHandle, l: &'static Lang, name: &str, stop: &AtomicBool) -> R
         .wake_words
         .iter()
         .map(|w| format!("{w} {name}"))
-        .chain([name.clone(), "[unk]".into()])
+        .chain([name.clone()])
+        .chain(l.stop_words.iter().map(|w| w.to_string()))
+        .chain(["[unk]".to_string()])
         .collect();
+    let stop_words: Vec<String> = l.stop_words.iter().map(|w| w.to_string()).collect();
     let grammar = CString::new(serde_json::to_string(&grammar).unwrap()).unwrap();
 
     unsafe {
@@ -419,7 +426,7 @@ fn listen(app: &AppHandle, l: &'static Lang, name: &str, stop: &AtomicBool) -> R
         let result = if wake.is_null() || full.is_null() {
             Err("Couldn't start speech recognition.".into())
         } else {
-            capture(stop, |pcm| feed(app, v, wake, full, pcm, &name))
+            capture(stop, |pcm| feed(app, v, wake, full, pcm, &name, &stop_words))
         };
         if !wake.is_null() {
             (v.rec_free)(wake);
@@ -438,17 +445,36 @@ thread_local! {
 
 /// One 100 ms chunk of audio through whichever recognizer is active.
 /// `wake` and `full` are live recognizers owned by `listen`.
-fn feed(app: &AppHandle, v: &Vosk, wake: *mut c_void, full: *mut c_void, pcm: &[u8], name: &str) {
-    if SPEAKING.load(Ordering::Relaxed) {
-        return;
-    }
+fn feed(
+    app: &AppHandle,
+    v: &Vosk,
+    wake: *mut c_void,
+    full: *mut c_void,
+    pcm: &[u8],
+    name: &str,
+    stop_words: &[String],
+) {
+    let speaking = SPEAKING.load(Ordering::Relaxed);
     MODE.with(|mode| unsafe {
         let mut mode = mode.borrow_mut();
+        // While Mochi talks only the wake grammar runs: that's the barge-in.
+        if speaking && matches!(*mode, Mode::Command { .. }) {
+            *mode = Mode::Wake;
+        }
         match *mode {
             Mode::Wake => {
                 let done = (v.accept)(wake, pcm.as_ptr() as *const c_char, pcm.len() as i32) == 1;
                 let heard = if done { json_text((v.result)(wake), "text") } else { json_text((v.partial)(wake), "partial") };
+                if speaking && stop_words.iter().any(|w| heard.contains(w.as_str())) {
+                    (v.reset)(wake);
+                    stop_speaking();
+                    let _ = app.emit("voice-stopped", ());
+                    return;
+                }
                 if heard.split_whitespace().any(|w| name.split_whitespace().any(|n| n == w)) {
+                    if speaking {
+                        stop_speaking();
+                    }
                     (v.reset)(wake);
                     (v.reset)(full);
                     *mode = Mode::Command { until: Instant::now() + Duration::from_secs(LISTEN_SECS) };
@@ -597,12 +623,39 @@ pub fn stop_speaking() {
     SPEAKING.store(false, Ordering::Relaxed);
 }
 
-/// Markdown and symbols read badly aloud.
+/// Longest answer read aloud; the rest stays on screen.
+const MAX_SPOKEN_CHARS: usize = 320;
+
+/// Markdown and symbols read badly aloud, and long answers are cut at the last
+/// sentence that fits: the full text is in the chat.
 pub fn plain_for_speech(text: &str) -> String {
-    text.chars()
+    let plain = text
+        .chars()
         .filter(|c| !matches!(c, '*' | '_' | '`' | '#' | '>' | '~' | '|'))
         .collect::<String>()
         .split_whitespace()
         .collect::<Vec<_>>()
-        .join(" ")
+        .join(" ");
+    if plain.chars().count() <= MAX_SPOKEN_CHARS {
+        return plain;
+    }
+    let cut: String = plain.chars().take(MAX_SPOKEN_CHARS).collect();
+    match cut.rfind(['.', '!', '?']) {
+        Some(end) if end > MAX_SPOKEN_CHARS / 3 => cut[..=end].to_string(),
+        _ => format!("{}…", cut.trim_end()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn long_answers_are_cut_at_a_sentence() {
+        let long = "Primera frase. ".repeat(40);
+        let spoken = plain_for_speech(&long);
+        assert!(spoken.chars().count() <= MAX_SPOKEN_CHARS);
+        assert!(spoken.ends_with('.'));
+        assert_eq!(plain_for_speech("**Hola** _mundo_"), "Hola mundo");
+    }
 }

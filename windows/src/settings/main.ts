@@ -535,7 +535,9 @@ async function main() {
   );
 
   void onEvent<Settings>("settings-changed", (s) => {
-    settings = { ...settings, ...s };
+    // Same object, updated in place: the sections hold a reference to it, and
+    // replacing it made every edit after the first one go to a stale copy.
+    Object.assign(settings, s);
   });
 }
 
