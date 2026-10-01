@@ -411,7 +411,7 @@ export function voiceSection(settings: Settings, save: Save): HTMLElement {
           : "Activa la voz para que Mochi escuche.";
     test.style.display = st.englishVoice || st.spanishVoice ? "" : "none";
     whisperLine.textContent = st.whisper
-      ? "Whisper activo: entiende mucho mejor lo que dices después de \"Hey Mochi\"."
+      ? "Whisper activo en modo charla (frases largas). Las órdenes cortas las entiende Vosk, que acierta más con ellas."
       : "";
   }
 

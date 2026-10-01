@@ -418,6 +418,13 @@ struct Listener {
 static LISTENER: OnceLock<Mutex<Option<Listener>>> = OnceLock::new();
 /// True while Mochi talks, so it doesn't hear itself.
 static SPEAKING: AtomicBool = AtomicBool::new(false);
+/// Chat mode ("charlemos"): long sentences, where Whisper beats Vosk. Short
+/// commands stay with Vosk, which was more accurate on them in testing.
+static CHAT_MODE: AtomicBool = AtomicBool::new(false);
+
+pub fn set_chat_mode(on: bool) {
+    CHAT_MODE.store(on, Ordering::Relaxed);
+}
 /// When Mochi last stopped talking, for the echo tail.
 static SPOKE_UNTIL: Mutex<Option<Instant>> = Mutex::new(None);
 
@@ -522,8 +529,9 @@ thread_local! {
 /// 16 kHz mono 16-bit PCM to text, with whisper-cli. `prompt` nudges the
 /// spelling of names (games, Mochi) a speech model can't know.
 fn transcribe(pcm: &[u8], code: &str, prompt: &str) -> Option<String> {
+    let _ = prompt; // a names prompt made Whisper answer in comma lists; not used
     let wav = voice_dir().join("command.wav");
-    std::fs::write(&wav, wav_bytes(pcm)).ok()?;
+    std::fs::write(&wav, wav_bytes(trim_silence(pcm))).ok()?;
     let threads = std::thread::available_parallelism().map(|n| n.get().min(8)).unwrap_or(4);
     let out = Command::new(whisper_exe())
         .arg("-m")
@@ -534,8 +542,6 @@ fn transcribe(pcm: &[u8], code: &str, prompt: &str) -> Option<String> {
         .arg(code)
         .arg("-t")
         .arg(threads.to_string())
-        .arg("--prompt")
-        .arg(prompt)
         .arg("-nt")
         .arg("-np")
         .current_dir(voice_dir().join("whisper").join("Release"))
@@ -552,6 +558,35 @@ fn transcribe(pcm: &[u8], code: &str, prompt: &str) -> Option<String> {
         .join(" ");
     let text = text.trim().to_string();
     (!text.is_empty()).then_some(text)
+}
+
+/// Cuts the silence before and after the speech (keeping 0.25 s around it):
+/// on short clips Whisper invents words to fill quiet audio.
+fn trim_silence(pcm: &[u8]) -> &[u8] {
+    const BLOCK: usize = 4000 * 2; // 0.25 s
+    const LOUD: f64 = 300.0;
+    let rms = |chunk: &[u8]| {
+        let n = chunk.len() / 2;
+        if n == 0 {
+            return 0.0;
+        }
+        let sum: f64 = chunk
+            .chunks_exact(2)
+            .map(|b| i16::from_le_bytes([b[0], b[1]]) as f64)
+            .map(|x| x * x)
+            .sum();
+        (sum / n as f64).sqrt()
+    };
+    let blocks: Vec<usize> = (0..pcm.len()).step_by(BLOCK).collect();
+    let loud: Vec<usize> = blocks
+        .iter()
+        .copied()
+        .filter(|&i| rms(&pcm[i..(i + BLOCK).min(pcm.len())]) > LOUD)
+        .collect();
+    let (Some(&first), Some(&last)) = (loud.first(), loud.last()) else { return pcm };
+    let start = first.saturating_sub(BLOCK);
+    let end = (last + 2 * BLOCK).min(pcm.len());
+    &pcm[start..end]
 }
 
 /// A minimal WAV header around raw 16 kHz mono 16-bit samples.
@@ -642,7 +677,7 @@ fn feed(
                     let audio = COMMAND_AUDIO.with(|a| std::mem::take(&mut *a.borrow_mut()));
                     if text.is_empty() {
                         let _ = app.emit("voice-timeout", ());
-                    } else if whisper_ready() {
+                    } else if whisper_ready() && CHAT_MODE.load(Ordering::Relaxed) {
                         let app = app.clone();
                         let (code, prompt) = (code.to_string(), prompt.to_string());
                         // Off the capture thread: the microphone keeps being read meanwhile.

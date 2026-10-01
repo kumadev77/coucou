@@ -368,6 +368,12 @@ fn voice_speak(app: AppHandle, shared: State<Shared>, text: String) -> Result<()
     voice::speak(&app, &settings, &voice::plain_for_speech(&text))
 }
 
+/// The island tells the listener which layer it's in (Whisper only for chat).
+#[tauri::command]
+fn voice_mode(chat: bool) {
+    voice::set_chat_mode(chat);
+}
+
 #[tauri::command]
 fn voice_stop() {
     voice::stop_speaking();
@@ -580,6 +586,7 @@ pub fn run() {
             voice_install,
             voice_speak,
             voice_stop,
+            voice_mode,
             ingest_file,
             secret_present,
             secret_set,

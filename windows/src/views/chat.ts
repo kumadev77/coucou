@@ -92,7 +92,10 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     try {
       const reply = await Bridge.assistantCommand(text);
       State.chatHistory.push({ id: nextId++, role: "assistant", content: reply.text });
-      if (reply.ui === "chat" || reply.ui === "commands") State.assistantMode = reply.ui;
+      if (reply.ui === "chat" || reply.ui === "commands") {
+        State.assistantMode = reply.ui;
+        void Bridge.voiceMode(reply.ui === "chat");
+      }
       if (State.settings.voiceSpeak) void Bridge.voiceSpeak(reply.text);
       Sound.play(reply.action ? "finish" : "pop");
       if (reply.ui === "music" || reply.ui === "video") {

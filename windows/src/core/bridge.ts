@@ -105,6 +105,7 @@ export const Bridge = {
   voiceInstall: (part: "en" | "es" | "voice-en" | "voice-es" | "whisper") => callOrThrow<void>("voice_install", { part }),
   voiceSpeak: (text: string) => call<void>("voice_speak", { text }),
   voiceStop: () => call<void>("voice_stop"),
+  voiceMode: (chat: boolean) => call<void>("voice_mode", { chat }),
   /** The Windows "Open" dialog. Null when cancelled. */
   pickFile: () => call<string | null>("pick_file"),
   /** Only ever tells you whether a key exists — never its value. */
