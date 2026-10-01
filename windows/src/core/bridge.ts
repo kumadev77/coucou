@@ -99,6 +99,8 @@ export const Bridge = {
   youtubeSearch: (query: string) => callOrThrow<void>("youtube_search", { query }),
   gameLaunch: (name: string) => callOrThrow<void>("game_launch", { name }),
   potplayerDetect: () => call<string | null>("potplayer_detect"),
+  /** Command mode: turns what was said into an action. */
+  assistantCommand: (text: string) => callOrThrow<CommandReply>("assistant_command", { text }),
   voiceStatus: () => call<VoiceStatus>("voice_status"),
   voiceInstall: (part: "en" | "es" | "voice-en" | "voice-es") => callOrThrow<void>("voice_install", { part }),
   voiceSpeak: (text: string) => call<void>("voice_speak", { text }),
@@ -129,6 +131,13 @@ export interface IntegrationUpdate {
 export type ChatContext =
   | { kind: "file"; name: string; path: string }
   | { kind: "window"; appName: string; title: string; url?: string };
+
+export interface CommandReply {
+  text: string;
+  action: MochiAction | null;
+  /** "chat" / "commands" switch mode; "music" / "video" open that picker. */
+  ui: "chat" | "commands" | "music" | "video" | null;
+}
 
 export interface VoiceStatus {
   runtime: boolean;

@@ -172,6 +172,26 @@ function claudeSection(status: HookStatus): HTMLElement {
   return section;
 }
 
+// ── Save button ───────────────────────────────────────────────────────────────
+
+/** Changes already save on their own; this makes it explicit and certain. */
+function saveBar(): HTMLElement {
+  const status = h("span", { class: "hint" });
+  const button = h("button", { class: "primary", text: "Guardar ajustes" });
+  button.addEventListener("click", async () => {
+    // A field still being edited commits on blur; do that first.
+    (document.activeElement as HTMLElement | null)?.blur();
+    await new Promise((r) => setTimeout(r, 50));
+    try {
+      await Bridge.saveSettings(settings);
+      status.textContent = `Guardado a las ${new Date().toLocaleTimeString()}`;
+    } catch (err) {
+      status.textContent = `No se pudo guardar: ${String(err)}`;
+    }
+  });
+  return h("div", { class: "save-bar" }, status, button);
+}
+
 // ── Claude API section ────────────────────────────────────────────────────────
 
 const MODELS: [string, string][] = [
@@ -532,6 +552,7 @@ async function main() {
       class: "hint",
       text: "No telemetry. Network requests only go to the services you configure yourself.",
     }),
+    saveBar(),
   );
 
   void onEvent<Settings>("settings-changed", (s) => {

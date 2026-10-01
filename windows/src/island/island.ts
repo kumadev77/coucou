@@ -643,6 +643,19 @@ export class Island {
     this.listenHtmlDrops();
     void onEvent<MochiAction>("mochi-action", (a) => this.react(a));
     void onEvent<null>("voice-wake", () => this.onWake());
+    window.addEventListener("mochi-open-media", (e) => {
+      State.mediaKind = (e as CustomEvent<"music" | "video">).detail;
+      this.setView("media");
+    });
+    void onEvent<boolean>("voice-speaking", (on) => {
+      State.voiceSpeaking = on;
+      State.notify();
+    });
+    // Any click on the island hushes Mochi: the island can't take Escape
+    // unless it's typing, and the canvas itself lets clicks through.
+    window.addEventListener("pointerdown", () => {
+      if (State.voiceSpeaking) void Bridge.voiceStop();
+    });
     void onEvent<string>("voice-error", (err) => {
       State.noteMessage = `Voz: ${err}`;
       this.alert("note");

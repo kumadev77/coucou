@@ -9,6 +9,7 @@ mod island;
 mod launcher;
 mod log;
 mod pipe;
+mod router;
 mod secrets;
 mod settings;
 mod tray;
@@ -325,6 +326,25 @@ fn youtube_search(app: AppHandle, query: String) -> Result<(), String> {
     Ok(())
 }
 
+// ── Command mode ──────────────────────────────────────────────────────────────
+
+/// A spoken (or typed) command in command mode: patterns first, then the model.
+#[tauri::command]
+async fn assistant_command(
+    app: AppHandle,
+    shared: State<'_, Shared>,
+    chat: State<'_, Chat>,
+    text: String,
+) -> Result<router::CommandReply, String> {
+    let settings = shared.settings.lock().unwrap().clone();
+    let reply = router::run(&settings, &text).await;
+    chat.record(&text, &reply.text);
+    if let Some(action) = reply.action {
+        let _ = app.emit("mochi-action", action);
+    }
+    Ok(reply)
+}
+
 // ── Voice ─────────────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -343,9 +363,9 @@ async fn voice_install(app: AppHandle, shared: State<'_, Shared>, part: String) 
 }
 
 #[tauri::command]
-fn voice_speak(shared: State<Shared>, text: String) -> Result<(), String> {
+fn voice_speak(app: AppHandle, shared: State<Shared>, text: String) -> Result<(), String> {
     let settings = shared.settings.lock().unwrap().clone();
-    voice::speak(&settings, &voice::plain_for_speech(&text))
+    voice::speak(&app, &settings, &voice::plain_for_speech(&text))
 }
 
 #[tauri::command]
@@ -555,6 +575,7 @@ pub fn run() {
             youtube_search,
             game_launch,
             potplayer_detect,
+            assistant_command,
             voice_status,
             voice_install,
             voice_speak,

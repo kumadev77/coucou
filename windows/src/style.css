@@ -1486,3 +1486,15 @@ input[type="range"]::-webkit-slider-thumb {
 /* Quick web search */
 .ws-body { justify-content: center; }
 .ws-yt { color: #f87171; }
+
+/* "Callar": stops Mochi reading an answer aloud (views/chat.ts). */
+.hush-btn {
+  border: 0;
+  border-radius: 8px;
+  padding: 3px 8px;
+  background: rgba(244, 80, 94, 0.25);
+  color: #fda4af;
+  font: 500 11px var(--font);
+  cursor: default;
+}
+.hush-btn:hover { background: rgba(244, 80, 94, 0.4); }

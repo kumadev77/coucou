@@ -183,6 +183,10 @@ class AppState {
   chatDay = "";
   /** Between the wake word and the end of the spoken command. */
   voiceListening = false;
+  /** Mochi is reading an answer aloud. */
+  voiceSpeaking = false;
+  /** Voice layer: commands by default, conversation after "charlemos". */
+  assistantMode: "commands" | "chat" = "commands";
 
   tasks: AgentTask[] = [];
   focusId: string | null = null;

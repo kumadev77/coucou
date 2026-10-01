@@ -47,7 +47,9 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     spellcheck: "false",
   }) as HTMLInputElement;
   const send = h("button", { class: "send-btn", title: "Send" }, svg(ICONS.arrowUp, 11));
-  const bar = h("div", { class: "chat-bar" }, input, send);
+  // Shown while Mochi reads an answer aloud.
+  const hush = h("button", { class: "hush-btn", text: "Callar", onclick: () => void Bridge.voiceStop() });
+  const bar = h("div", { class: "chat-bar" }, input, hush, send);
 
   const el = h(
     "div",
@@ -77,6 +79,34 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     if (last) last.replaceChildren(renderMarkdown(text));
     log.scrollTop = log.scrollHeight;
   });
+
+  /** Command mode: the router turns the words into an action and confirms briefly. */
+  async function command(text: string) {
+    sending = true;
+    input.value = "";
+    State.chatDay = new Date().toDateString();
+    State.chatHistory.push({ id: nextId++, role: "user", content: text });
+    State.stateOverride = "thinking";
+    State.notify();
+    onHeightChange();
+    try {
+      const reply = await Bridge.assistantCommand(text);
+      State.chatHistory.push({ id: nextId++, role: "assistant", content: reply.text });
+      if (reply.ui === "chat" || reply.ui === "commands") State.assistantMode = reply.ui;
+      if (State.settings.voiceSpeak) void Bridge.voiceSpeak(reply.text);
+      Sound.play(reply.action ? "finish" : "pop");
+      if (reply.ui === "music" || reply.ui === "video") {
+        window.dispatchEvent(new CustomEvent("mochi-open-media", { detail: reply.ui }));
+      }
+    } catch (err) {
+      State.chatHistory.push({ id: nextId++, role: "assistant", content: String(err).replace(/^Error:\s*/, "") });
+    } finally {
+      State.stateOverride = null;
+      sending = false;
+      State.notify();
+      onHeightChange();
+    }
+  }
 
   async function submit(spoken = false) {
     const query = input.value.trim();
@@ -128,8 +158,13 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
   void onEvent<string>("voice-text", (text) => {
     State.voiceListening = false;
     if (sending) return;
-    input.value = text;
-    void submit(true);
+    // Layers: commands by default; conversation only after "charlemos".
+    const backToCommands = /modo comando|deja de (charlar|hablar)|command(s)? mode|stop chatting/i.test(text);
+    if (State.assistantMode === "commands" || backToCommands) void command(text);
+    else {
+      input.value = text;
+      void submit(true);
+    }
   });
   void onEvent<string>("voice-timeout", () => {
     State.voiceListening = false;
@@ -165,11 +200,14 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
       }
 
       input.placeholder = State.voiceListening
-        ? "Te escucho…"
+        ? State.assistantMode === "chat"
+          ? "Te escucho (charlando)…"
+          : "Te escucho (comandos)…"
         : State.chatHistory.length === 0
           ? "Ask me anything…"
           : "Continue…";
       input.disabled = sending;
+      hush.style.display = State.voiceSpeaking ? "" : "none";
     },
     focus() {
       input.focus();

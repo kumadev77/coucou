@@ -13,7 +13,7 @@ use std::os::windows::ffi::OsStrExt;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -235,7 +235,7 @@ struct WaveHdr {
 const WAVE_MAPPER: u32 = 0xFFFF_FFFF;
 const WAVE_FORMAT_PCM: u16 = 1;
 const WHDR_DONE: u32 = 0x1;
-const SND_SYNC: u32 = 0x0000;
+const SND_ASYNC: u32 = 0x0001;
 const SND_NODEFAULT: u32 = 0x0002;
 const SND_FILENAME: u32 = 0x0002_0000;
 
@@ -362,6 +362,7 @@ static SPEAKING: AtomicBool = AtomicBool::new(false);
 
 /// Starts, restarts or stops listening to match the settings.
 pub fn sync(app: &AppHandle, s: &Settings) {
+    let _ = APP.set(app.clone());
     // Before taking the lock: status() reads it too.
     let ready = status();
     let slot = LISTENER.get_or_init(|| Mutex::new(None));
@@ -465,6 +466,9 @@ fn feed(
             Mode::Wake => {
                 let done = (v.accept)(wake, pcm.as_ptr() as *const c_char, pcm.len() as i32) == 1;
                 let heard = if done { json_text((v.result)(wake), "text") } else { json_text((v.partial)(wake), "partial") };
+                if done && heard.split_whitespace().any(|w| w != "[unk]") {
+                    crate::log::line(format!("voice wake grammar heard: {heard:?}{}", if speaking { " (while speaking)" } else { "" }));
+                }
                 if speaking && stop_words.iter().any(|w| heard.contains(w.as_str())) {
                     (v.reset)(wake);
                     stop_speaking();
@@ -485,6 +489,7 @@ fn feed(
                 let done = (v.accept)(full, pcm.as_ptr() as *const c_char, pcm.len() as i32) == 1;
                 if done {
                     let text = json_text((v.result)(full), "text");
+                    crate::log::line(format!("voice heard: {text:?}"));
                     if !text.is_empty() {
                         let _ = app.emit("voice-text", text);
                         *mode = Mode::Wake;
@@ -572,8 +577,21 @@ fn capture(stop: &AtomicBool, mut on_audio: impl FnMut(&[u8])) -> Result<(), Str
 
 // ── Speaking ──────────────────────────────────────────────────────────────────
 
+/// Bumped by every new answer and every stop: a playback that sees a newer
+/// number than its own knows it has been cut off.
+static SPEECH_GEN: AtomicU64 = AtomicU64::new(0);
+static APP: OnceLock<AppHandle> = OnceLock::new();
+
+fn set_speaking(on: bool) {
+    SPEAKING.store(on, Ordering::Relaxed);
+    if let Some(app) = APP.get() {
+        let _ = app.emit("voice-speaking", on);
+    }
+}
+
 /// Says `text` with Piper in the background. A new call interrupts the old one.
-pub fn speak(s: &Settings, text: &str) -> Result<(), String> {
+pub fn speak(app: &AppHandle, s: &Settings, text: &str) -> Result<(), String> {
+    let _ = APP.set(app.clone());
     let l = lang(&s.voice_lang);
     let model = voice_file(l);
     if !piper_exe().is_file() || !model.is_file() {
@@ -582,8 +600,9 @@ pub fn speak(s: &Settings, text: &str) -> Result<(), String> {
     let text = text.to_string();
     let speed = (1.0 / s.voice_speed.clamp(0.5, 2.0)).to_string();
     stop_speaking();
+    let gen = SPEECH_GEN.fetch_add(1, Ordering::Relaxed) + 1;
     std::thread::spawn(move || {
-        let wav = voice_dir().join("last-answer.wav");
+        let wav = voice_dir().join(format!("answer-{}.wav", gen % 2));
         let child = Command::new(piper_exe())
             .arg("--model")
             .arg(&model)
@@ -602,25 +621,53 @@ pub fn speak(s: &Settings, text: &str) -> Result<(), String> {
             use std::io::Write;
             let _ = stdin.write_all(text.as_bytes());
         }
-        if !child.wait().is_ok_and(|s| s.success()) {
-            return;
+        if !child.wait().is_ok_and(|s| s.success()) || SPEECH_GEN.load(Ordering::Relaxed) != gen {
+            return; // failed, or stopped while Piper was still writing
         }
-        SPEAKING.store(true, Ordering::Relaxed);
+        let Some(length) = wav_duration(&wav) else { return };
+        // Async playback is the kind PlaySound(NULL) can cut off from any thread.
+        set_speaking(true);
         unsafe {
-            PlaySoundW(wide(&wav).as_ptr(), std::ptr::null_mut(), SND_FILENAME | SND_NODEFAULT | SND_SYNC);
+            PlaySoundW(wide(&wav).as_ptr(), std::ptr::null_mut(), SND_FILENAME | SND_NODEFAULT | SND_ASYNC);
         }
         // A short tail so the room echo isn't taken for speech.
-        std::thread::sleep(Duration::from_millis(300));
-        SPEAKING.store(false, Ordering::Relaxed);
+        let until = Instant::now() + length + Duration::from_millis(300);
+        while Instant::now() < until {
+            if SPEECH_GEN.load(Ordering::Relaxed) != gen {
+                return; // stop_speaking already cleared the flag
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        if SPEECH_GEN.load(Ordering::Relaxed) == gen {
+            set_speaking(false);
+        }
     });
     Ok(())
 }
 
+/// Length of a PCM WAV from its header.
+fn wav_duration(path: &Path) -> Option<Duration> {
+    let bytes = std::fs::read(path).ok()?;
+    if bytes.len() < 44 || &bytes[0..4] != b"RIFF" {
+        return None;
+    }
+    let u16_at = |i: usize| u16::from_le_bytes([bytes[i], bytes[i + 1]]) as u64;
+    let u32_at = |i: usize| u32::from_le_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]) as u64;
+    let channels = u16_at(22).max(1);
+    let rate = u32_at(24).max(1);
+    let bits = u16_at(34).max(8);
+    let data = bytes.len() as u64 - 44;
+    Some(Duration::from_millis(data * 1000 / (rate * channels * bits / 8)))
+}
+
 pub fn stop_speaking() {
+    SPEECH_GEN.fetch_add(1, Ordering::Relaxed);
     unsafe {
         PlaySoundW(std::ptr::null(), std::ptr::null_mut(), 0);
     }
-    SPEAKING.store(false, Ordering::Relaxed);
+    if SPEAKING.load(Ordering::Relaxed) {
+        set_speaking(false);
+    }
 }
 
 /// Longest answer read aloud; the rest stays on screen.
