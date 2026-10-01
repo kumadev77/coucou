@@ -59,7 +59,12 @@ pub fn search_media(settings: &Settings, kind: MediaKind, query: &str) -> Vec<Me
                 let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
                 // Folder names count too: "Breaking Bad/S01E01.mkv" matches "breaking bad".
                 let haystack = format!("{} {}", path.parent().map(|p| p.to_string_lossy()).unwrap_or_default(), name);
-                let score = match_score(&words, &haystack, &name);
+                // Exact words first; then by similarity, for spoken titles that
+                // come out spelled differently ("falling in rivers").
+                let score = match match_score(&words, &haystack, &name) {
+                    0 => fuzzy_score(&words, &haystack),
+                    s => s + FUZZY_MAX,
+                };
                 if score > 0 || words.is_empty() {
                     found.push(MediaItem {
                         name,
@@ -415,6 +420,41 @@ pub fn normalize_words(s: &str) -> Vec<String> {
 }
 
 /// 0 = no match. Every query word must appear; whole-word and name hits rank higher.
+/// Fuzzy scores stay below this, so any exact match ranks first.
+const FUZZY_MAX: u32 = 100;
+
+/// Words that carry no meaning in a title request.
+const FILLER_WORDS: &[&str] = &[
+    "the", "a", "an", "of", "by", "and", "de", "del", "la", "el", "los", "las", "y", "un", "una", "feat", "ft",
+];
+
+/// 0 = no match. Each meaningful query word is compared with the closest word
+/// of the file name and folder; most of them have to be close.
+fn fuzzy_score(words: &[String], haystack: &str) -> u32 {
+    let wanted: Vec<&String> = words.iter().filter(|w| !FILLER_WORDS.contains(&w.as_str())).collect();
+    if wanted.is_empty() {
+        return 0;
+    }
+    let hay = normalize_words(haystack);
+    let mut total = 0.0;
+    let mut matched = 0;
+    for w in &wanted {
+        let best = hay
+            .iter()
+            .map(|h| similarity(&sound_key(w), &sound_key(h)))
+            .fold(0.0, f64::max);
+        if best >= 0.6 {
+            matched += 1;
+            total += best;
+        }
+    }
+    // At least two thirds of the meaningful words, and never just one of several.
+    if matched * 3 < wanted.len() * 2 || (wanted.len() > 1 && matched < 2) {
+        return 0;
+    }
+    ((total / wanted.len() as f64) * (FUZZY_MAX - 1) as f64) as u32
+}
+
 fn match_score(words: &[String], haystack: &str, name: &str) -> u32 {
     if words.is_empty() {
         return 0;
@@ -482,6 +522,13 @@ mod tests {
         let s = Settings::default();
         assert!(handle_command(&s, "¿Qué tiempo hace hoy?").is_none());
         assert!(handle_command(&s, "Tell me a joke").is_none());
+    }
+
+    #[test]
+    fn fuzzy_finds_misheard_titles() {
+        let w = normalize_words("broken the falling in rivers");
+        assert!(fuzzy_score(&w, "Music Falling In Reverse - Broken") > 0);
+        assert_eq!(fuzzy_score(&w, "Music Linkin Park - Numb"), 0);
     }
 
     #[test]
