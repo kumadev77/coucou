@@ -20,10 +20,54 @@ pub struct Settings {
     /// Defaulted explicitly so a settings.json written by an older build still loads.
     #[serde(default = "default_model")]
     pub model: String,
+    /// Chat provider: "anthropic", "ollama" or "llamacpp".
+    #[serde(default = "default_provider")]
+    pub provider: String,
+    #[serde(default = "default_ollama_url")]
+    pub ollama_url: String,
+    #[serde(default)]
+    pub ollama_model: String,
+    #[serde(default = "default_llamacpp_url")]
+    pub llamacpp_url: String,
+    /// llama-server serves whatever model it was started with, so this is optional.
+    #[serde(default)]
+    pub llamacpp_model: String,
 }
 
 fn default_model() -> String {
     crate::claude::DEFAULT_MODEL.to_string()
+}
+
+fn default_provider() -> String {
+    "anthropic".into()
+}
+
+fn default_ollama_url() -> String {
+    "http://localhost:11434".into()
+}
+
+fn default_llamacpp_url() -> String {
+    "http://localhost:8080".into()
+}
+
+impl Settings {
+    /// Where the chat sends its next turn.
+    pub fn chat_backend(&self) -> crate::claude::Backend {
+        use crate::claude::Backend;
+        match self.provider.as_str() {
+            "ollama" => Backend::Local {
+                name: "Ollama",
+                base_url: self.ollama_url.clone(),
+                model: self.ollama_model.clone(),
+            },
+            "llamacpp" => Backend::Local {
+                name: "llama.cpp",
+                base_url: self.llamacpp_url.clone(),
+                model: self.llamacpp_model.clone(),
+            },
+            _ => Backend::Anthropic { model: self.model.clone() },
+        }
+    }
 }
 
 impl Default for Settings {
@@ -43,6 +87,11 @@ impl Default for Settings {
             autostart: false,
             hooks_installed: false,
             model: default_model(),
+            provider: default_provider(),
+            ollama_url: default_ollama_url(),
+            ollama_model: String::new(),
+            llamacpp_url: default_llamacpp_url(),
+            llamacpp_model: String::new(),
         }
     }
 }

@@ -243,14 +243,82 @@ function apiSection(hasKey: boolean): HTMLElement {
 
   clearBtn.style.display = hasKey ? "" : "none";
 
-  return h(
-    "section",
+  // Provider: Anthropic, or a local OpenAI-compatible server.
+  const provider = h("select", {}) as HTMLSelectElement;
+  for (const [id, label] of PROVIDERS) provider.append(h("option", { value: id, text: label }));
+  provider.value = settings.provider;
+
+  const anthropicRows = h(
+    "div",
     {},
-    h("h2", {}, dot, h("span", { text: "Claude" })),
     state,
     h("div", { class: "row" }, h("label", { text: "API key" }), field, saveBtn, clearBtn),
     h("div", { class: "row" }, h("label", { text: "Model" }), model),
+  );
+  const ollamaRows = localRows("ollamaUrl", "ollamaModel", "llama3.2", "Run `ollama list` to see your models.");
+  const llamacppRows = localRows(
+    "llamacppUrl", "llamacppModel", "optional",
+    "Start llama-server first. The model name is optional: it serves the one it was started with.",
+  );
+
+  function showProvider() {
+    anthropicRows.style.display = settings.provider === "anthropic" ? "" : "none";
+    ollamaRows.style.display = settings.provider === "ollama" ? "" : "none";
+    llamacppRows.style.display = settings.provider === "llamacpp" ? "" : "none";
+  }
+  provider.addEventListener("change", () => {
+    settings.provider = provider.value as Settings["provider"];
+    showProvider();
+    void save();
+  });
+  showProvider();
+
+  return h(
+    "section",
+    {},
+    h("h2", {}, dot, h("span", { text: "Chat" })),
+    h("div", { class: "row" }, h("label", { text: "Provider" }), provider),
+    anthropicRows,
+    ollamaRows,
+    llamacppRows,
     feedback,
+  );
+}
+
+const PROVIDERS: [Settings["provider"], string][] = [
+  ["anthropic", "Claude (Anthropic API)"],
+  ["ollama", "Ollama (local)"],
+  ["llamacpp", "llama.cpp (local)"],
+];
+
+/** Server URL + model fields for a local provider. No web search there. */
+function localRows(
+  urlKey: "ollamaUrl" | "llamacppUrl",
+  modelKey: "ollamaModel" | "llamacppModel",
+  modelPlaceholder: string,
+  hint: string,
+): HTMLElement {
+  const input = (key: typeof urlKey | typeof modelKey, placeholder: string) => {
+    const el = h("input", {
+      type: "text",
+      placeholder,
+      style: "flex:1 1 auto;min-width:0",
+      autocomplete: "off",
+      spellcheck: "false",
+    }) as HTMLInputElement;
+    el.value = settings[key];
+    el.addEventListener("change", () => {
+      settings[key] = el.value.trim();
+      void save();
+    });
+    return el;
+  };
+  return h(
+    "div",
+    {},
+    h("span", { class: "hint", text: `${hint} Runs on your machine, no internet access, PDFs not supported.` }),
+    h("div", { class: "row" }, h("label", { text: "Server" }), input(urlKey, "http://localhost:…")),
+    h("div", { class: "row" }, h("label", { text: "Model" }), input(modelKey, modelPlaceholder)),
   );
 }
 

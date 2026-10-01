@@ -92,6 +92,12 @@ export interface Settings {
   hooksInstalled: boolean;
   /** Claude model used by the chat. */
   model: string;
+  /** Chat provider: Anthropic's API or a local server. */
+  provider: "anthropic" | "ollama" | "llamacpp";
+  ollamaUrl: string;
+  ollamaModel: string;
+  llamacppUrl: string;
+  llamacppModel: string;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -106,6 +112,11 @@ export const DEFAULT_SETTINGS: Settings = {
   autostart: false,
   hooksInstalled: false,
   model: "claude-opus-5",
+  provider: "anthropic",
+  ollamaUrl: "http://localhost:11434",
+  ollamaModel: "",
+  llamacppUrl: "http://localhost:8080",
+  llamacppModel: "",
 };
 
 type Listener = () => void;
