@@ -335,9 +335,10 @@ async fn assistant_command(
     shared: State<'_, Shared>,
     chat: State<'_, Chat>,
     text: String,
+    alt: Option<String>,
 ) -> Result<router::CommandReply, String> {
     let settings = shared.settings.lock().unwrap().clone();
-    let reply = router::run(&settings, &text).await;
+    let reply = router::run(&settings, &text, alt.as_deref().unwrap_or("")).await;
     chat.record(&text, &reply.text);
     if let Some(action) = reply.action {
         let _ = app.emit("mochi-action", action);

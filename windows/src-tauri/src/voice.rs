@@ -472,6 +472,14 @@ pub fn sync(app: &AppHandle, s: &Settings) {
     *current = Some(Listener { stop, key });
 }
 
+/// What was said after the wake word: in the listening language, and in the
+/// other one when its model is there (for Spanglish).
+#[derive(Clone, Serialize)]
+struct VoiceText {
+    text: String,
+    alt: String,
+}
+
 enum Mode {
     Wake,
     Command { until: Instant },
@@ -504,11 +512,33 @@ fn listen(app: &AppHandle, l: &'static Lang, name: &str, prompt: &str, stop: &At
         if !wake.is_null() {
             (v.set_words)(wake, 1); // per-word confidence, to reject false wakes
         }
+        // Spanglish: the other language's model listens to the command too,
+        // and the router gets both transcripts.
+        let other = lang(if l.code == "es" { "en" } else { "es" });
+        let other_dir = voice_dir().join(other.model_dir);
+        let (alt_model, alt) = if other_dir.join("am").is_dir() {
+            let path = CString::new(other_dir.to_string_lossy().as_bytes()).unwrap_or_default();
+            let m = (v.model_new)(path.as_ptr());
+            if m.is_null() {
+                (m, std::ptr::null_mut())
+            } else {
+                (m, (v.rec_new)(m, SAMPLE_RATE as f32))
+            }
+        } else {
+            (std::ptr::null_mut(), std::ptr::null_mut())
+        };
+        ALT.with(|a| a.set(alt));
         let result = if wake.is_null() || full.is_null() {
             Err("Couldn't start speech recognition.".into())
         } else {
             capture(stop, |pcm| feed(app, v, wake, full, pcm, &name, &stop_words, l.code, prompt))
         };
+        if !alt.is_null() {
+            (v.rec_free)(alt);
+        }
+        if !alt_model.is_null() {
+            (v.model_free)(alt_model);
+        }
         if !wake.is_null() {
             (v.rec_free)(wake);
         }
@@ -522,6 +552,8 @@ fn listen(app: &AppHandle, l: &'static Lang, name: &str, prompt: &str, stop: &At
 
 thread_local! {
     static MODE: std::cell::RefCell<Mode> = const { std::cell::RefCell::new(Mode::Wake) };
+    /// The other language's recognizer (null when its model isn't downloaded).
+    static ALT: std::cell::Cell<*mut c_void> = const { std::cell::Cell::new(std::ptr::null_mut()) };
     /// Everything heard since the wake word, for Whisper.
     static COMMAND_AUDIO: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
 }
@@ -529,6 +561,7 @@ thread_local! {
 /// 16 kHz mono 16-bit PCM to text, with whisper-cli. `prompt` nudges the
 /// spelling of names (games, Mochi) a speech model can't know.
 fn transcribe(pcm: &[u8], code: &str, prompt: &str) -> Option<String> {
+    let _ = code;
     let _ = prompt; // a names prompt made Whisper answer in comma lists; not used
     let wav = voice_dir().join("command.wav");
     std::fs::write(&wav, wav_bytes(trim_silence(pcm))).ok()?;
@@ -539,7 +572,7 @@ fn transcribe(pcm: &[u8], code: &str, prompt: &str) -> Option<String> {
         .arg("-f")
         .arg(&wav)
         .arg("-l")
-        .arg(code)
+        .arg("auto") // Spanglish: Whisper picks the language per clip
         .arg("-t")
         .arg(threads.to_string())
         .arg("-nt")
@@ -657,6 +690,10 @@ fn feed(
                     (v.reset)(wake);
                     (v.reset)(full);
                     COMMAND_AUDIO.with(|a| a.borrow_mut().clear());
+                    let alt = ALT.with(|a| a.get());
+                    if !alt.is_null() {
+                        (v.reset)(alt);
+                    }
                     *mode = Mode::Command { until: Instant::now() + Duration::from_secs(LISTEN_SECS) };
                     let _ = app.emit("voice-wake", ());
                 }
@@ -665,11 +702,22 @@ fn feed(
                 // Vosk still runs here: its partials show live in the chat and it
                 // decides when the sentence ended. Whisper then redoes the words.
                 COMMAND_AUDIO.with(|a| a.borrow_mut().extend_from_slice(pcm));
+                let alt = ALT.with(|a| a.get());
+                if !alt.is_null() {
+                    (v.accept)(alt, pcm.as_ptr() as *const c_char, pcm.len() as i32);
+                }
                 let done = (v.accept)(full, pcm.as_ptr() as *const c_char, pcm.len() as i32) == 1;
                 let timed_out = Instant::now() > until;
                 if done || timed_out {
                     let text = json_text(if done { (v.result)(full) } else { (v.final_result)(full) }, "text");
-                    crate::log::line(format!("voice heard (vosk): {text:?}"));
+                    let alt_text = if alt.is_null() {
+                        String::new()
+                    } else {
+                        let t = json_text((v.final_result)(alt), "text");
+                        (v.reset)(alt);
+                        t
+                    };
+                    crate::log::line(format!("voice heard (vosk): {text:?} / other language: {alt_text:?}"));
                     if text.is_empty() && done && !timed_out {
                         return; // a pause before speaking: keep listening
                     }
@@ -684,10 +732,11 @@ fn feed(
                         std::thread::spawn(move || {
                             let better = transcribe(&audio, &code, &prompt).unwrap_or_default();
                             crate::log::line(format!("voice heard (whisper): {better:?}"));
-                            let _ = app.emit("voice-text", if better.is_empty() { text } else { better });
+                            let text = if better.is_empty() { text } else { better };
+                            let _ = app.emit("voice-text", VoiceText { text, alt: alt_text });
                         });
                     } else {
-                        let _ = app.emit("voice-text", text);
+                        let _ = app.emit("voice-text", VoiceText { text, alt: alt_text });
                     }
                     return;
                 }

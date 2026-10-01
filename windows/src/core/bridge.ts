@@ -100,7 +100,8 @@ export const Bridge = {
   gameLaunch: (name: string) => callOrThrow<void>("game_launch", { name }),
   potplayerDetect: () => call<string | null>("potplayer_detect"),
   /** Command mode: turns what was said into an action. */
-  assistantCommand: (text: string) => callOrThrow<CommandReply>("assistant_command", { text }),
+  assistantCommand: (text: string, alt = "") =>
+    callOrThrow<CommandReply>("assistant_command", { text, alt: alt || null }),
   voiceStatus: () => call<VoiceStatus>("voice_status"),
   voiceInstall: (part: "en" | "es" | "voice-en" | "voice-es" | "whisper") => callOrThrow<void>("voice_install", { part }),
   voiceSpeak: (text: string) => call<void>("voice_speak", { text }),

@@ -33,11 +33,12 @@ struct Intent {
     query: String,
 }
 
-pub async fn run(settings: &Settings, text: &str) -> CommandReply {
+/// `alt` is the same speech heard by the other language's model ("" if none).
+pub async fn run(settings: &Settings, text: &str, alt: &str) -> CommandReply {
     let es = settings.voice_lang == "es" || looks_spanish(text);
     let say = |en: &str, sp: &str| if es { sp.to_string() } else { en.to_string() };
 
-    if let Some(mode) = mode_switch(text) {
+    if let Some(mode) = mode_switch(text).or_else(|| mode_switch(alt)) {
         return CommandReply {
             text: if mode == "chat" {
                 say("Sure, let's talk. Say \"commands mode\" when you're done.", "¡Claro, charlemos! Di \"modo comandos\" cuando acabemos.")
@@ -49,20 +50,26 @@ pub async fn run(settings: &Settings, text: &str) -> CommandReply {
         };
     }
 
-    // 1. Exact patterns.
-    if let Some(result) = launcher::handle_command(settings, text) {
-        return match result {
-            Ok(done) => CommandReply { text: done.reply, action: Some(done.action), ui: None },
-            Err(err) => CommandReply { text: err, action: None, ui: None },
-        };
+    // 1. Exact patterns, on either transcript. A pattern that matched but found
+    // nothing ("pon <misheard title>") still lets the model try both transcripts.
+    let mut pattern_error = None;
+    for t in [text, alt].into_iter().filter(|t| !t.is_empty()) {
+        match launcher::handle_command(settings, t) {
+            Some(Ok(done)) => return CommandReply { text: done.reply, action: Some(done.action), ui: None },
+            Some(Err(err)) => pattern_error = pattern_error.or(Some(err)),
+            None => {}
+        }
     }
 
     // 2. The model.
     let intent = match settings.chat_backend() {
-        Backend::Local { base_url, model, .. } => classify(&base_url, &model, settings, text).await,
+        Backend::Local { base_url, model, .. } => classify(&base_url, &model, settings, text, alt).await,
         Backend::Anthropic { .. } => Err("no local model".into()),
     };
     let Ok(intent) = intent else {
+        if let Some(err) = pattern_error {
+            return CommandReply { text: err, action: None, ui: None };
+        }
         return CommandReply {
             text: say(
                 "I didn't get that as a command. Say \"let's talk\" to chat.",
@@ -166,7 +173,7 @@ fn looks_spanish(text: &str) -> bool {
 }
 
 /// Asks the local model to turn the text into one action. JSON only, short, no thinking.
-async fn classify(base_url: &str, model: &str, settings: &Settings, text: &str) -> Result<Intent, String> {
+async fn classify(base_url: &str, model: &str, settings: &Settings, text: &str, alt: &str) -> Result<Intent, String> {
     let games: Vec<String> = settings
         .games
         .iter()
@@ -189,6 +196,10 @@ Reply with JSON only: {{\"action\": \"music\" | \"video\" | \"game\" | \"search\
 - youtube: search YouTube. query = what to search.\n\
 - chat: the user wants to talk or have a conversation.\n\
 - none: anything else.\n\
+The user often mixes Spanish and English (Spanglish), e.g. \"pon Broken de Falling in Reverse\". You may get two \
+transcripts of the same speech, one from a Spanish recognizer and one from an English one: each gets its own \
+language's words right and mangles the other's. Combine them: take Spanish words from the Spanish one and English \
+titles and names from the English one.\n\
 Be strict. Only pick an action when the text clearly asks for it (a verb like play, open, search, pon, abre, busca, \
 or an obvious request). Speech recognition also picks up background talk, music and the assistant's own voice: \
 if the text is a random sentence, a fragment or doesn't make sense as a request, answer none. Never pick game \
@@ -198,7 +209,11 @@ unless one of the listed games is clearly named.",
     let body = json!({
         "messages": [
             { "role": "system", "content": system },
-            { "role": "user", "content": text },
+            { "role": "user", "content": if alt.is_empty() {
+                text.to_string()
+            } else {
+                format!("Recognizer 1: {text}\nRecognizer 2: {alt}")
+            } },
         ],
         "max_tokens": 80,
         "temperature": 0,

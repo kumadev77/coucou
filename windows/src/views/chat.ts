@@ -81,7 +81,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
   });
 
   /** Command mode: the router turns the words into an action and confirms briefly. */
-  async function command(text: string) {
+  async function command(text: string, alt = "") {
     sending = true;
     input.value = "";
     State.chatDay = new Date().toDateString();
@@ -90,7 +90,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     State.notify();
     onHeightChange();
     try {
-      const reply = await Bridge.assistantCommand(text);
+      const reply = await Bridge.assistantCommand(text, alt);
       State.chatHistory.push({ id: nextId++, role: "assistant", content: reply.text });
       if (reply.ui === "chat" || reply.ui === "commands") {
         State.assistantMode = reply.ui;
@@ -158,12 +158,13 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
   void onEvent<string>("voice-partial", (text) => {
     if (!sending) input.value = text;
   });
-  void onEvent<string>("voice-text", (text) => {
+  // `alt`: the same words heard by the other language's model (Spanglish).
+  void onEvent<{ text: string; alt: string }>("voice-text", ({ text, alt }) => {
     State.voiceListening = false;
     if (sending) return;
     // Layers: commands by default; conversation only after "charlemos".
-    const backToCommands = /modo comando|deja de (charlar|hablar)|command(s)? mode|stop chatting/i.test(text);
-    if (State.assistantMode === "commands" || backToCommands) void command(text);
+    const backToCommands = /modo comando|deja de (charlar|hablar)|command(s)? mode|stop chatting/i.test(`${text} ${alt}`);
+    if (State.assistantMode === "commands" || backToCommands) void command(text, alt);
     else {
       input.value = text;
       void submit(true);
