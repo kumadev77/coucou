@@ -78,11 +78,12 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     log.scrollTop = log.scrollHeight;
   });
 
-  async function submit() {
+  async function submit(spoken = false) {
     const query = input.value.trim();
     if (!query || sending) return;
     input.value = "";
     sending = true;
+    State.chatDay = new Date().toDateString();
     Sound.play("send");
 
     State.chatHistory.push({ id: nextId++, role: "user", content: query });
@@ -98,6 +99,8 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
       const reply = await Bridge.chatSend(query, context);
       if (streaming) streaming.content = reply.text;
       else State.chatHistory.push({ id: nextId++, role: "assistant", content: reply.text });
+      // Spoken question, spoken answer.
+      if (spoken && State.settings.voiceSpeak) void Bridge.voiceSpeak(reply.text);
       State.stateOverride = null;
       Sound.play("finish");
     } catch (err) {
@@ -117,6 +120,21 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
   }
 
   send.addEventListener("click", () => void submit());
+
+  // Voice: what's being said shows in the field, the final words are sent.
+  void onEvent<string>("voice-partial", (text) => {
+    if (!sending) input.value = text;
+  });
+  void onEvent<string>("voice-text", (text) => {
+    State.voiceListening = false;
+    if (sending) return;
+    input.value = text;
+    void submit(true);
+  });
+  void onEvent<string>("voice-timeout", () => {
+    State.voiceListening = false;
+    State.notify();
+  });
   input.addEventListener("keydown", (e) => {
     if ((e as KeyboardEvent).key === "Enter") {
       e.preventDefault();
@@ -146,7 +164,11 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
         log.scrollTop = log.scrollHeight;
       }
 
-      input.placeholder = State.chatHistory.length === 0 ? "Ask me anything…" : "Continue…";
+      input.placeholder = State.voiceListening
+        ? "Te escucho…"
+        : State.chatHistory.length === 0
+          ? "Ask me anything…"
+          : "Continue…";
       input.disabled = sending;
     },
     focus() {

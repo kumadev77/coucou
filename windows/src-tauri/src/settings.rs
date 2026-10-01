@@ -65,6 +65,22 @@ pub struct Settings {
     /// Glasses when searching, dancing to music, a controller for games.
     #[serde(default = "default_true")]
     pub mochi_reactions: bool,
+    /// Listen for "Hey Mochi". Off by default: it keeps the microphone open.
+    #[serde(default)]
+    pub voice_enabled: bool,
+    /// "en" or "es".
+    #[serde(default = "default_voice_lang")]
+    pub voice_lang: String,
+    /// Read answers aloud when the question was spoken.
+    #[serde(default = "default_true")]
+    pub voice_speak: bool,
+    /// Speaking speed, 0.5 to 2.0.
+    #[serde(default = "default_mochi_scale")]
+    pub voice_speed: f64,
+}
+
+fn default_voice_lang() -> String {
+    "en".into()
 }
 
 fn default_mochi_name() -> String {
@@ -188,6 +204,10 @@ impl Default for Settings {
             mochi_scale: default_mochi_scale(),
             muted_sounds: Vec::new(),
             mochi_reactions: true,
+            voice_enabled: false,
+            voice_lang: default_voice_lang(),
+            voice_speak: true,
+            voice_speed: 1.0,
         }
     }
 }

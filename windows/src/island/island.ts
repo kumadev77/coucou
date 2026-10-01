@@ -424,6 +424,23 @@ export class Island {
     });
   }
 
+  /** "Hey Mochi": straight into the chat, a fresh one on the first call of the day. */
+  private onWake() {
+    void Bridge.voiceStop();
+    const today = new Date().toDateString();
+    if (State.chatDay !== today) {
+      State.chatDay = today;
+      State.chatHistory = [];
+      void Bridge.chatReset();
+    }
+    State.voiceListening = true;
+    Sound.play("peek");
+    this.engine.triggerEmote("surprised");
+    this.alert("prompt");
+    State.notify();
+    this.ensureRunning();
+  }
+
   /** Mochi dresses up for what it just did. Off in the customization panel = no props. */
   private react(action: MochiAction) {
     if (!State.settings.mochiReactions) return;
@@ -624,6 +641,11 @@ export class Island {
     void onDragDrop((e) => this.onDragDrop(e));
     this.listenHtmlDrops();
     void onEvent<MochiAction>("mochi-action", (a) => this.react(a));
+    void onEvent<null>("voice-wake", () => this.onWake());
+    void onEvent<string>("voice-error", (err) => {
+      State.noteMessage = `Voz: ${err}`;
+      this.alert("note");
+    });
 
     // Outside Tauri (plain browser) drive the cursor from DOM events so the
     // island can be inspected with `npm run dev`.

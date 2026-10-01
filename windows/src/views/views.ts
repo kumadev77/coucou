@@ -318,10 +318,11 @@ export function buildViews(
   onChatHeightChange: () => void,
 ): Map<IslandViewName, ViewHost> {
   const map = new Map<IslandViewName, ViewHost>();
-  // Home replaces both the Claude Code overview and the empty card.
-  const home = buildHome(actions);
-  map.set("overview", home);
-  map.set("empty", home);
+  // Home replaces both the Claude Code overview and the empty card. Each name
+  // needs its own instance: views are shown by toggling `.on` per map entry, so
+  // a shared element would be switched off again by the other name.
+  map.set("overview", buildHome(actions));
+  map.set("empty", buildHome(actions));
   map.set("media", buildMedia(actions));
   map.set("websearch", buildWebSearch(actions));
   map.set("approval", buildApproval(actions));

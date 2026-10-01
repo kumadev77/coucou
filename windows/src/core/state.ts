@@ -116,6 +116,12 @@ export interface Settings {
   mutedSounds: string[];
   /** Glasses when searching, dancing to music, a controller for games. */
   mochiReactions: boolean;
+  /** "Hey Mochi". Off by default: it keeps the microphone open. */
+  voiceEnabled: boolean;
+  voiceLang: "en" | "es";
+  /** Read answers aloud when the question was spoken. */
+  voiceSpeak: boolean;
+  voiceSpeed: number;
 }
 
 export interface MediaCategory {
@@ -160,6 +166,10 @@ export const DEFAULT_SETTINGS: Settings = {
   mochiScale: 1,
   mutedSounds: [],
   mochiReactions: true,
+  voiceEnabled: false,
+  voiceLang: "en",
+  voiceSpeak: true,
+  voiceSpeed: 1,
 };
 
 type Listener = () => void;
@@ -169,6 +179,10 @@ class AppState {
   view: IslandViewName = "empty";
   /** Which list the music / videos screen shows. */
   mediaKind: "music" | "video" = "music";
+  /** Day of the current chat: the first "Hey Mochi" of a new day starts a fresh one. */
+  chatDay = "";
+  /** Between the wake word and the end of the spoken command. */
+  voiceListening = false;
 
   tasks: AgentTask[] = [];
   focusId: string | null = null;

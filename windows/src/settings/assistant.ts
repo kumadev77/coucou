@@ -1,7 +1,7 @@
 // Settings sections for Mochi as a home assistant: media folders, PotPlayer
 // and games. Each section edits `settings` in place and calls `save()`.
 
-import { Bridge } from "../core/bridge";
+import { Bridge, onEvent, type VoiceProgress } from "../core/bridge";
 import type { Game, MediaCategory, Settings } from "../core/state";
 import { h, clear } from "../views/dom";
 
@@ -308,5 +308,131 @@ export function mochiSection(settings: Settings, save: Save): HTMLElement {
     ),
     h("div", { class: "hint", text: "Sonidos (desmarca los que no quieras oír):" }),
     sounds,
+  );
+}
+
+// ── Voice ─────────────────────────────────────────────────────────────────────
+
+export function voiceSection(settings: Settings, save: Save): HTMLElement {
+  const statusLine = h("span", { class: "hint" });
+  const progress = h("div", { class: "hint" });
+  const buttons = h("div", { class: "row" });
+  const feedback = h("div", {});
+
+  const enabled = h("input", { type: "checkbox" }) as HTMLInputElement;
+  enabled.checked = settings.voiceEnabled;
+  enabled.addEventListener("change", () => {
+    settings.voiceEnabled = enabled.checked;
+    save();
+    void refresh();
+  });
+
+  const langSel = h("select", {}) as HTMLSelectElement;
+  langSel.addEventListener("change", () => {
+    settings.voiceLang = langSel.value as Settings["voiceLang"];
+    save();
+  });
+
+  const speak = h("input", { type: "checkbox" }) as HTMLInputElement;
+  speak.checked = settings.voiceSpeak;
+  speak.addEventListener("change", () => {
+    settings.voiceSpeak = speak.checked;
+    save();
+  });
+
+  const speed = h("input", { type: "range", min: "0.6", max: "1.6", step: "0.1" }) as HTMLInputElement;
+  speed.value = String(settings.voiceSpeed || 1);
+  speed.addEventListener("change", () => {
+    settings.voiceSpeed = Number(speed.value);
+    save();
+  });
+
+  const test = h("button", { text: "Probar voz" });
+  test.addEventListener("click", () => {
+    void Bridge.voiceSpeak(
+      settings.voiceLang === "es" ? `Hola, soy ${settings.mochiName}. ¿Qué hacemos?` : `Hi, I'm ${settings.mochiName}. What shall we do?`,
+    );
+  });
+
+  let busy = false;
+  async function install(part: "en" | "es" | "voice-en" | "voice-es") {
+    if (busy) return;
+    busy = true;
+    clear(feedback);
+    try {
+      await Bridge.voiceInstall(part);
+      feedback.append(h("div", { class: "notice ok", text: "Listo." }));
+    } catch (err) {
+      feedback.append(h("div", { class: "notice err", text: String(err).replace(/^Error:\s*/, "") }));
+    } finally {
+      busy = false;
+      progress.textContent = "";
+      await refresh();
+    }
+  }
+
+  const dl = (label: string, part: "en" | "es" | "voice-en" | "voice-es") => {
+    const b = h("button", { class: "primary", text: label });
+    b.addEventListener("click", () => void install(part));
+    return b;
+  };
+
+  async function refresh() {
+    const st = await Bridge.voiceStatus();
+    if (!st) return;
+    clear(buttons);
+    if (!st.english) buttons.append(dl("Descargar reconocimiento en inglés (~56 MB)", "en"));
+    if (!st.englishVoice) buttons.append(dl("Descargar voz de Mochi en inglés (~85 MB)", "voice-en"));
+    if (!st.spanish) buttons.append(dl("Añadir español (~40 MB)", "es"));
+    else if (!st.spanishVoice) buttons.append(dl("Voz de Mochi en español (~63 MB)", "voice-es"));
+
+    clear(langSel);
+    if (st.english) langSel.append(h("option", { value: "en", text: "English" }));
+    if (st.spanish) langSel.append(h("option", { value: "es", text: "Español" }));
+    langSel.value = settings.voiceLang;
+    langSel.disabled = !(st.english || st.spanish);
+
+    const name = settings.mochiName || "Mochi";
+    statusLine.textContent = !(st.english || st.spanish)
+      ? "Primero descarga el reconocimiento de voz. Todo se queda en tu PC."
+      : st.listening
+        ? `Escuchando. Di "Hey ${name}" (o "Oye ${name}" en español), espera el sonido y habla.`
+        : settings.voiceEnabled
+          ? "Arrancando…"
+          : "Activa la voz para que Mochi escuche.";
+    test.style.display = st.englishVoice || st.spanishVoice ? "" : "none";
+  }
+
+  void onEvent<VoiceProgress>("voice-progress", (p) => {
+    const mb = (n: number) => (n / 1048576).toFixed(1);
+    progress.textContent = p.total
+      ? `${p.label}: ${mb(p.done)} / ${mb(p.total)} MB`
+      : p.label;
+  });
+  void refresh();
+
+  return h(
+    "section",
+    {},
+    h("h2", {}, h("span", { text: "Voz" })),
+    statusLine,
+    h(
+      "div",
+      { class: "row" },
+      h("label", { text: "Escuchar" }),
+      h("label", { class: "chip-check" }, enabled, h("span", { text: "Mantiene el micrófono abierto mientras está activo" })),
+    ),
+    h("div", { class: "row" }, h("label", { text: "Idioma" }), langSel),
+    h(
+      "div",
+      { class: "row" },
+      h("label", { text: "Responder en voz alta" }),
+      h("label", { class: "chip-check" }, speak, h("span", { text: "Cuando le hablas" })),
+      test,
+    ),
+    h("div", { class: "row" }, h("label", { text: "Velocidad" }), speed),
+    buttons,
+    progress,
+    feedback,
   );
 }

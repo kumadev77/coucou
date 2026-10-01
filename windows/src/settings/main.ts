@@ -6,7 +6,7 @@ import "./settings.css";
 import { Bridge, onEvent, type HookStatus } from "../core/bridge";
 import { DEFAULT_SETTINGS, type Settings } from "../core/state";
 import { h, clear } from "../views/dom";
-import { gamesSection, mediaSection, mochiSection } from "./assistant";
+import { gamesSection, mediaSection, mochiSection, voiceSection } from "./assistant";
 
 let settings: Settings = { ...DEFAULT_SETTINGS };
 let version = "";
@@ -522,6 +522,7 @@ async function main() {
     h("h1", {}, h("span", { text: "Coucou" }), h("span", { class: "version", text: version })),
     claudeSection(status),
     apiSection(hasKey),
+    voiceSection(settings, () => void save()),
     mochiSection(settings, () => void save()),
     mediaSection(settings, () => void save()),
     gamesSection(settings, () => void save()),

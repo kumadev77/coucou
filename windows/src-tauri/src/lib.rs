@@ -12,6 +12,7 @@ mod pipe;
 mod secrets;
 mod settings;
 mod tray;
+mod voice;
 mod win_user;
 
 use std::os::windows::process::CommandExt;
@@ -84,6 +85,7 @@ fn save_settings(app: AppHandle, shared: State<Shared>, settings: Settings) {
         let collapsed = shared.gate.collapsed.load(Ordering::Relaxed);
         island::apply_geometry(&app, &settings.screen, collapsed);
     }
+    voice::sync(&app, &settings);
     // Keep the other window in step (island ⇄ settings window).
     let _ = app.emit("settings-changed", settings);
 }
@@ -323,6 +325,34 @@ fn youtube_search(app: AppHandle, query: String) -> Result<(), String> {
     Ok(())
 }
 
+// ── Voice ─────────────────────────────────────────────────────────────────────
+
+#[tauri::command]
+fn voice_status() -> voice::VoiceStatus {
+    voice::status()
+}
+
+/// Downloads one part ("en", "es", "voice-en", "voice-es"), then starts
+/// listening if voice is on.
+#[tauri::command]
+async fn voice_install(app: AppHandle, shared: State<'_, Shared>, part: String) -> Result<(), String> {
+    voice::install(&app, &part).await?;
+    let settings = shared.settings.lock().unwrap().clone();
+    voice::sync(&app, &settings);
+    Ok(())
+}
+
+#[tauri::command]
+fn voice_speak(shared: State<Shared>, text: String) -> Result<(), String> {
+    let settings = shared.settings.lock().unwrap().clone();
+    voice::speak(&settings, &voice::plain_for_speech(&text))
+}
+
+#[tauri::command]
+fn voice_stop() {
+    voice::stop_speaking();
+}
+
 /// PotPlayer found in the registry, for the settings window to show.
 #[tauri::command]
 fn potplayer_detect() -> Option<String> {
@@ -525,6 +555,10 @@ pub fn run() {
             youtube_search,
             game_launch,
             potplayer_detect,
+            voice_status,
+            voice_install,
+            voice_speak,
+            voice_stop,
             ingest_file,
             secret_present,
             secret_set,
@@ -553,6 +587,7 @@ pub fn run() {
             hooks::ensure_hook_exe(&handle);
             pipe::start(handle.clone());
             integrations::start(handle.clone());
+            voice::sync(&handle, &loaded);
             Ok(())
         })
         .run(tauri::generate_context!())

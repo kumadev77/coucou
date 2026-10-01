@@ -99,6 +99,10 @@ export const Bridge = {
   youtubeSearch: (query: string) => callOrThrow<void>("youtube_search", { query }),
   gameLaunch: (name: string) => callOrThrow<void>("game_launch", { name }),
   potplayerDetect: () => call<string | null>("potplayer_detect"),
+  voiceStatus: () => call<VoiceStatus>("voice_status"),
+  voiceInstall: (part: "en" | "es" | "voice-en" | "voice-es") => callOrThrow<void>("voice_install", { part }),
+  voiceSpeak: (text: string) => call<void>("voice_speak", { text }),
+  voiceStop: () => call<void>("voice_stop"),
   /** The Windows "Open" dialog. Null when cancelled. */
   pickFile: () => call<string | null>("pick_file"),
   /** Only ever tells you whether a key exists — never its value. */
@@ -125,6 +129,22 @@ export interface IntegrationUpdate {
 export type ChatContext =
   | { kind: "file"; name: string; path: string }
   | { kind: "window"; appName: string; title: string; url?: string };
+
+export interface VoiceStatus {
+  runtime: boolean;
+  english: boolean;
+  spanish: boolean;
+  piper: boolean;
+  englishVoice: boolean;
+  spanishVoice: boolean;
+  listening: boolean;
+}
+
+export interface VoiceProgress {
+  label: string;
+  done: number;
+  total: number;
+}
 
 export interface MediaItem {
   name: string;
