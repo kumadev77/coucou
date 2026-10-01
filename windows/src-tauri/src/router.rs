@@ -188,7 +188,11 @@ Reply with JSON only: {{\"action\": \"music\" | \"video\" | \"game\" | \"search\
 - search: search the web. query = what to search.\n\
 - youtube: search YouTube. query = what to search.\n\
 - chat: the user wants to talk or have a conversation.\n\
-- none: anything else.",
+- none: anything else.\n\
+Be strict. Only pick an action when the text clearly asks for it (a verb like play, open, search, pon, abre, busca, \
+or an obvious request). Speech recognition also picks up background talk, music and the assistant's own voice: \
+if the text is a random sentence, a fragment or doesn't make sense as a request, answer none. Never pick game \
+unless one of the listed games is clearly named.",
         if games.is_empty() { "(no games yet)".to_string() } else { games.join("; ") }
     );
     let body = json!({

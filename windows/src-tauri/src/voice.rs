@@ -28,6 +28,12 @@ const SAMPLE_RATE: u32 = 16_000;
 /// 100 ms of 16-bit mono audio per buffer.
 const BUF_BYTES: usize = (SAMPLE_RATE as usize / 10) * 2;
 const BUFFERS: usize = 4;
+/// Minimum confidence in the wake word, normally and while Mochi talks.
+const WAKE_CONF: f64 = 0.80;
+const WAKE_CONF_ECHO: f64 = 0.97;
+/// After Mochi stops talking the room still echoes it for a moment.
+const ECHO_TAIL: Duration = Duration::from_millis(1500);
+
 /// How long Mochi waits for a command after the wake word.
 const LISTEN_SECS: u64 = 8;
 
@@ -300,6 +306,7 @@ type RecAccept = unsafe extern "C" fn(*mut c_void, *const c_char, i32) -> i32;
 type RecText = unsafe extern "C" fn(*mut c_void) -> *const c_char;
 type RecVoid = unsafe extern "C" fn(*mut c_void);
 type SetLogLevel = unsafe extern "C" fn(i32);
+type SetWords = unsafe extern "C" fn(*mut c_void, i32);
 
 struct Vosk {
     model_new: ModelNew,
@@ -312,6 +319,7 @@ struct Vosk {
     final_result: RecText,
     reset: RecVoid,
     rec_free: RecVoid,
+    set_words: SetWords,
 }
 
 // The function pointers are plain C entry points; sharing them is fine.
@@ -360,7 +368,30 @@ fn load_vosk() -> Result<Vosk, String> {
             final_result: sym!("vosk_recognizer_final_result", RecText),
             reset: sym!("vosk_recognizer_reset", RecVoid),
             rec_free: sym!("vosk_recognizer_free", RecVoid),
+            set_words: sym!("vosk_recognizer_set_words", SetWords),
         })
+    }
+}
+
+/// How sure Vosk is of the wake word: confidence 0..1 of the name's words, or
+/// 0 when they weren't heard.
+fn name_confidence(ptr: *const c_char, name: &str) -> f64 {
+    if ptr.is_null() {
+        return 0.0;
+    }
+    let raw = unsafe { CStr::from_ptr(ptr) }.to_string_lossy();
+    let Ok(v) = serde_json::from_str::<Value>(&raw) else { return 0.0 };
+    let words = v.get("result").and_then(Value::as_array).cloned().unwrap_or_default();
+    let names: Vec<&str> = name.split_whitespace().collect();
+    let confs: Vec<f64> = words
+        .iter()
+        .filter(|w| w.get("word").and_then(Value::as_str).is_some_and(|x| names.contains(&x)))
+        .filter_map(|w| w.get("conf").and_then(Value::as_f64))
+        .collect();
+    if confs.is_empty() {
+        0.0
+    } else {
+        confs.iter().cloned().fold(1.0, f64::min)
     }
 }
 
@@ -387,6 +418,12 @@ struct Listener {
 static LISTENER: OnceLock<Mutex<Option<Listener>>> = OnceLock::new();
 /// True while Mochi talks, so it doesn't hear itself.
 static SPEAKING: AtomicBool = AtomicBool::new(false);
+/// When Mochi last stopped talking, for the echo tail.
+static SPOKE_UNTIL: Mutex<Option<Instant>> = Mutex::new(None);
+
+fn in_echo_tail() -> bool {
+    SPOKE_UNTIL.lock().unwrap().is_some_and(|t| t.elapsed() < ECHO_TAIL)
+}
 
 /// Starts, restarts or stops listening to match the settings.
 pub fn sync(app: &AppHandle, s: &Settings) {
@@ -457,6 +494,9 @@ fn listen(app: &AppHandle, l: &'static Lang, name: &str, prompt: &str, stop: &At
         }
         let wake = (v.rec_new_grm)(model, SAMPLE_RATE as f32, grammar.as_ptr());
         let full = (v.rec_new)(model, SAMPLE_RATE as f32);
+        if !wake.is_null() {
+            (v.set_words)(wake, 1); // per-word confidence, to reject false wakes
+        }
         let result = if wake.is_null() || full.is_null() {
             Err("Couldn't start speech recognition.".into())
         } else {
@@ -556,18 +596,26 @@ fn feed(
         }
         match *mode {
             Mode::Wake => {
+                let _ = stop_words; // stop words fired on Mochi's own voice: hush is a click now
                 let done = (v.accept)(wake, pcm.as_ptr() as *const c_char, pcm.len() as i32) == 1;
-                let heard = if done { json_text((v.result)(wake), "text") } else { json_text((v.partial)(wake), "partial") };
-                if done && heard.split_whitespace().any(|w| w != "[unk]") {
-                    crate::log::line(format!("voice wake grammar heard: {heard:?}{}", if speaking { " (while speaking)" } else { "" }));
-                }
-                if speaking && stop_words.iter().any(|w| heard.contains(w.as_str())) {
-                    (v.reset)(wake);
-                    stop_speaking();
-                    let _ = app.emit("voice-stopped", ());
+                // Partials guess on half a word and a tiny grammar maps almost any
+                // sound to the name: only finished phrases with a confident name count.
+                if !done {
                     return;
                 }
-                if heard.split_whitespace().any(|w| name.split_whitespace().any(|n| n == w)) {
+                let raw = (v.result)(wake);
+                let heard = json_text(raw, "text");
+                let conf = name_confidence(raw, name);
+                if heard.split_whitespace().any(|w| w != "[unk]") {
+                    crate::log::line(format!(
+                        "voice wake grammar heard: {heard:?} conf {conf:.2}{}",
+                        if speaking { " (while speaking)" } else { "" }
+                    ));
+                }
+                // Mochi's own voice through the speakers is the usual false wake:
+                // stricter while it talks and just after.
+                let needed = if speaking || in_echo_tail() { WAKE_CONF_ECHO } else { WAKE_CONF };
+                if conf >= needed {
                     if speaking {
                         stop_speaking();
                     }
@@ -691,6 +739,9 @@ static APP: OnceLock<AppHandle> = OnceLock::new();
 
 fn set_speaking(on: bool) {
     SPEAKING.store(on, Ordering::Relaxed);
+    if !on {
+        *SPOKE_UNTIL.lock().unwrap() = Some(Instant::now());
+    }
     if let Some(app) = APP.get() {
         let _ = app.emit("voice-speaking", on);
     }
