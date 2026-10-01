@@ -37,6 +37,10 @@ const VOSK_RUNTIME: &str = "https://github.com/alphacep/vosk-api/releases/downlo
 const VOSK_DIR: &str = "vosk-win64-0.3.45";
 const PIPER_ZIP: &str = "https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_windows_amd64.zip";
 const VOICES_BASE: &str = "https://huggingface.co/rhasspy/piper-voices/resolve/main/";
+/// Whisper transcribes what's said after the wake word; Vosk only spots the wake word.
+const WHISPER_ZIP: &str = "https://github.com/ggml-org/whisper.cpp/releases/download/v1.9.2/whisper-bin-x64.zip";
+const WHISPER_MODEL_URL: &str = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small-q5_1.bin";
+const WHISPER_MODEL: &str = "ggml-small-q5_1.bin";
 
 struct Lang {
     code: &'static str,
@@ -81,6 +85,18 @@ fn voice_file(l: &Lang) -> PathBuf {
     voice_dir().join("voices").join(format!("{name}.onnx"))
 }
 
+fn whisper_exe() -> PathBuf {
+    voice_dir().join("whisper").join("Release").join("whisper-cli.exe")
+}
+
+fn whisper_model() -> PathBuf {
+    voice_dir().join("whisper").join(WHISPER_MODEL)
+}
+
+fn whisper_ready() -> bool {
+    whisper_exe().is_file() && whisper_model().is_file()
+}
+
 fn piper_exe() -> PathBuf {
     voice_dir().join("piper").join("piper.exe")
 }
@@ -96,6 +112,7 @@ pub struct VoiceStatus {
     pub piper: bool,
     pub english_voice: bool,
     pub spanish_voice: bool,
+    pub whisper: bool,
     pub listening: bool,
 }
 
@@ -109,6 +126,7 @@ pub fn status() -> VoiceStatus {
         piper: piper_exe().is_file(),
         english_voice: voice_file(lang("en")).is_file(),
         spanish_voice: voice_file(lang("es")).is_file(),
+        whisper: whisper_ready(),
         listening: LISTENER.get().is_some_and(|l| l.lock().unwrap().is_some()),
     }
 }
@@ -134,6 +152,16 @@ pub async fn install(app: &AppHandle, part: &str) -> Result<(), String> {
             let l = lang(part);
             if !d.join(l.model_dir).join("am").is_dir() {
                 fetch_zip(app, l.model_zip, "Modelo de reconocimiento", &d).await?;
+            }
+        }
+        "whisper" => {
+            let dir = d.join("whisper");
+            std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+            if !whisper_exe().is_file() {
+                fetch_zip(app, WHISPER_ZIP, "Whisper", &dir).await?;
+            }
+            if !whisper_model().is_file() {
+                fetch(app, WHISPER_MODEL_URL, "Modelo de Whisper", &whisper_model()).await?;
             }
         }
         "voice-en" | "voice-es" => {
@@ -370,7 +398,12 @@ pub fn sync(app: &AppHandle, s: &Settings) {
     let l = lang(&s.voice_lang);
     let installed = ready.runtime && if l.code == "es" { ready.spanish } else { ready.english };
     let want = s.voice_enabled && installed;
-    let key = format!("{}|{}", l.code, s.mochi_name.trim().to_lowercase());
+    // Names Whisper should expect: Mochi's own and the user's games.
+    let mut vocab: Vec<String> = vec![s.mochi_name.trim().to_string()];
+    vocab.extend(s.games.iter().map(|g| g.name.clone()));
+    vocab.extend(s.media_categories.iter().map(|c| c.name.clone()));
+    let prompt = vocab.join(", ");
+    let key = format!("{}|{}|{}", l.code, s.mochi_name.trim().to_lowercase(), prompt);
 
     if let Some(running) = current.as_ref() {
         if want && running.key == key {
@@ -387,7 +420,7 @@ pub fn sync(app: &AppHandle, s: &Settings) {
     let app = app.clone();
     let name = s.mochi_name.trim().to_lowercase();
     std::thread::spawn(move || {
-        if let Err(err) = listen(&app, l, &name, &thread_stop) {
+        if let Err(err) = listen(&app, l, &name, &prompt, &thread_stop) {
             crate::log::line(format!("voice: {err}"));
             let _ = app.emit("voice-error", err);
         }
@@ -400,7 +433,7 @@ enum Mode {
     Command { until: Instant },
 }
 
-fn listen(app: &AppHandle, l: &'static Lang, name: &str, stop: &AtomicBool) -> Result<(), String> {
+fn listen(app: &AppHandle, l: &'static Lang, name: &str, prompt: &str, stop: &AtomicBool) -> Result<(), String> {
     let v = vosk()?;
     let model_path = CString::new(voice_dir().join(l.model_dir).to_string_lossy().as_bytes())
         .map_err(|e| e.to_string())?;
@@ -427,7 +460,7 @@ fn listen(app: &AppHandle, l: &'static Lang, name: &str, stop: &AtomicBool) -> R
         let result = if wake.is_null() || full.is_null() {
             Err("Couldn't start speech recognition.".into())
         } else {
-            capture(stop, |pcm| feed(app, v, wake, full, pcm, &name, &stop_words))
+            capture(stop, |pcm| feed(app, v, wake, full, pcm, &name, &stop_words, l.code, prompt))
         };
         if !wake.is_null() {
             (v.rec_free)(wake);
@@ -442,6 +475,63 @@ fn listen(app: &AppHandle, l: &'static Lang, name: &str, stop: &AtomicBool) -> R
 
 thread_local! {
     static MODE: std::cell::RefCell<Mode> = const { std::cell::RefCell::new(Mode::Wake) };
+    /// Everything heard since the wake word, for Whisper.
+    static COMMAND_AUDIO: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// 16 kHz mono 16-bit PCM to text, with whisper-cli. `prompt` nudges the
+/// spelling of names (games, Mochi) a speech model can't know.
+fn transcribe(pcm: &[u8], code: &str, prompt: &str) -> Option<String> {
+    let wav = voice_dir().join("command.wav");
+    std::fs::write(&wav, wav_bytes(pcm)).ok()?;
+    let threads = std::thread::available_parallelism().map(|n| n.get().min(8)).unwrap_or(4);
+    let out = Command::new(whisper_exe())
+        .arg("-m")
+        .arg(whisper_model())
+        .arg("-f")
+        .arg(&wav)
+        .arg("-l")
+        .arg(code)
+        .arg("-t")
+        .arg(threads.to_string())
+        .arg("--prompt")
+        .arg(prompt)
+        .arg("-nt")
+        .arg("-np")
+        .current_dir(voice_dir().join("whisper").join("Release"))
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !(l.starts_with('[') && l.ends_with(']')))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let text = text.trim().to_string();
+    (!text.is_empty()).then_some(text)
+}
+
+/// A minimal WAV header around raw 16 kHz mono 16-bit samples.
+fn wav_bytes(pcm: &[u8]) -> Vec<u8> {
+    let mut w = Vec::with_capacity(44 + pcm.len());
+    let len = pcm.len() as u32;
+    w.extend_from_slice(b"RIFF");
+    w.extend_from_slice(&(36 + len).to_le_bytes());
+    w.extend_from_slice(b"WAVEfmt ");
+    w.extend_from_slice(&16u32.to_le_bytes());
+    w.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    w.extend_from_slice(&1u16.to_le_bytes()); // mono
+    w.extend_from_slice(&SAMPLE_RATE.to_le_bytes());
+    w.extend_from_slice(&(SAMPLE_RATE * 2).to_le_bytes());
+    w.extend_from_slice(&2u16.to_le_bytes());
+    w.extend_from_slice(&16u16.to_le_bytes());
+    w.extend_from_slice(b"data");
+    w.extend_from_slice(&len.to_le_bytes());
+    w.extend_from_slice(pcm);
+    w
 }
 
 /// One 100 ms chunk of audio through whichever recognizer is active.
@@ -454,6 +544,8 @@ fn feed(
     pcm: &[u8],
     name: &str,
     stop_words: &[String],
+    code: &str,
+    prompt: &str,
 ) {
     let speaking = SPEAKING.load(Ordering::Relaxed);
     MODE.with(|mode| unsafe {
@@ -481,29 +573,44 @@ fn feed(
                     }
                     (v.reset)(wake);
                     (v.reset)(full);
+                    COMMAND_AUDIO.with(|a| a.borrow_mut().clear());
                     *mode = Mode::Command { until: Instant::now() + Duration::from_secs(LISTEN_SECS) };
                     let _ = app.emit("voice-wake", ());
                 }
             }
             Mode::Command { until } => {
+                // Vosk still runs here: its partials show live in the chat and it
+                // decides when the sentence ended. Whisper then redoes the words.
+                COMMAND_AUDIO.with(|a| a.borrow_mut().extend_from_slice(pcm));
                 let done = (v.accept)(full, pcm.as_ptr() as *const c_char, pcm.len() as i32) == 1;
-                if done {
-                    let text = json_text((v.result)(full), "text");
-                    crate::log::line(format!("voice heard: {text:?}"));
-                    if !text.is_empty() {
+                let timed_out = Instant::now() > until;
+                if done || timed_out {
+                    let text = json_text(if done { (v.result)(full) } else { (v.final_result)(full) }, "text");
+                    crate::log::line(format!("voice heard (vosk): {text:?}"));
+                    if text.is_empty() && done && !timed_out {
+                        return; // a pause before speaking: keep listening
+                    }
+                    *mode = Mode::Wake;
+                    let audio = COMMAND_AUDIO.with(|a| std::mem::take(&mut *a.borrow_mut()));
+                    if text.is_empty() {
+                        let _ = app.emit("voice-timeout", ());
+                    } else if whisper_ready() {
+                        let app = app.clone();
+                        let (code, prompt) = (code.to_string(), prompt.to_string());
+                        // Off the capture thread: the microphone keeps being read meanwhile.
+                        std::thread::spawn(move || {
+                            let better = transcribe(&audio, &code, &prompt).unwrap_or_default();
+                            crate::log::line(format!("voice heard (whisper): {better:?}"));
+                            let _ = app.emit("voice-text", if better.is_empty() { text } else { better });
+                        });
+                    } else {
                         let _ = app.emit("voice-text", text);
-                        *mode = Mode::Wake;
                     }
                     return;
                 }
                 let partial = json_text((v.partial)(full), "partial");
                 if !partial.is_empty() {
                     let _ = app.emit("voice-partial", partial);
-                }
-                if Instant::now() > until {
-                    let text = json_text((v.final_result)(full), "text");
-                    let _ = app.emit(if text.is_empty() { "voice-timeout" } else { "voice-text" }, text);
-                    *mode = Mode::Wake;
                 }
             }
         }

@@ -102,7 +102,7 @@ export const Bridge = {
   /** Command mode: turns what was said into an action. */
   assistantCommand: (text: string) => callOrThrow<CommandReply>("assistant_command", { text }),
   voiceStatus: () => call<VoiceStatus>("voice_status"),
-  voiceInstall: (part: "en" | "es" | "voice-en" | "voice-es") => callOrThrow<void>("voice_install", { part }),
+  voiceInstall: (part: "en" | "es" | "voice-en" | "voice-es" | "whisper") => callOrThrow<void>("voice_install", { part }),
   voiceSpeak: (text: string) => call<void>("voice_speak", { text }),
   voiceStop: () => call<void>("voice_stop"),
   /** The Windows "Open" dialog. Null when cancelled. */
@@ -146,6 +146,7 @@ export interface VoiceStatus {
   piper: boolean;
   englishVoice: boolean;
   spanishVoice: boolean;
+  whisper: boolean;
   listening: boolean;
 }
 

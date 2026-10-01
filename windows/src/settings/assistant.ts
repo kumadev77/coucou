@@ -323,6 +323,7 @@ export function voiceSection(settings: Settings, save: Save): HTMLElement {
   const progress = h("div", { class: "hint" });
   const buttons = h("div", { class: "row" });
   const feedback = h("div", {});
+  const whisperLine = h("span", { class: "hint" });
 
   const enabled = h("input", { type: "checkbox" }) as HTMLInputElement;
   enabled.checked = settings.voiceEnabled;
@@ -360,7 +361,7 @@ export function voiceSection(settings: Settings, save: Save): HTMLElement {
   });
 
   let busy = false;
-  async function install(part: "en" | "es" | "voice-en" | "voice-es") {
+  async function install(part: "en" | "es" | "voice-en" | "voice-es" | "whisper") {
     if (busy) return;
     busy = true;
     clear(feedback);
@@ -376,7 +377,7 @@ export function voiceSection(settings: Settings, save: Save): HTMLElement {
     }
   }
 
-  const dl = (label: string, part: "en" | "es" | "voice-en" | "voice-es") => {
+  const dl = (label: string, part: "en" | "es" | "voice-en" | "voice-es" | "whisper") => {
     const b = h("button", { class: "primary", text: label });
     b.addEventListener("click", () => void install(part));
     return b;
@@ -390,6 +391,9 @@ export function voiceSection(settings: Settings, save: Save): HTMLElement {
     if (!st.englishVoice) buttons.append(dl("Descargar voz de Mochi en inglés (~85 MB)", "voice-en"));
     if (!st.spanish) buttons.append(dl("Añadir español (~40 MB)", "es"));
     else if (!st.spanishVoice) buttons.append(dl("Voz de Mochi en español (~63 MB)", "voice-es"));
+    if ((st.english || st.spanish) && !st.whisper) {
+      buttons.append(dl("Mejor reconocimiento con Whisper (~200 MB)", "whisper"));
+    }
 
     clear(langSel);
     if (st.english) langSel.append(h("option", { value: "en", text: "English" }));
@@ -406,6 +410,9 @@ export function voiceSection(settings: Settings, save: Save): HTMLElement {
           ? "Arrancando…"
           : "Activa la voz para que Mochi escuche.";
     test.style.display = st.englishVoice || st.spanishVoice ? "" : "none";
+    whisperLine.textContent = st.whisper
+      ? "Whisper activo: entiende mucho mejor lo que dices después de \"Hey Mochi\"."
+      : "";
   }
 
   void onEvent<VoiceProgress>("voice-progress", (p) => {
@@ -421,6 +428,7 @@ export function voiceSection(settings: Settings, save: Save): HTMLElement {
     {},
     h("h2", {}, h("span", { text: "Voz" })),
     statusLine,
+    whisperLine,
     h(
       "div",
       { class: "row" },
